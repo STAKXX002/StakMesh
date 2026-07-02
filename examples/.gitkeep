@@ -1,0 +1,3 @@
+# Phase 2 lands here: a real MNIST-scale training script split across 
+# two devices, using DistributedContext against a real StakML training loop
+# instead of the simulated-thread tests in tests/.
