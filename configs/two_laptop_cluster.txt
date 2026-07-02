@@ -1,0 +1,15 @@
+# Example peer list for your actual cluster: two devices.
+#
+# Format: <rank> <host> <port>
+#
+# Fill in real LAN IPs before use (check with `ip addr` on the Ubuntu box,
+# `ipconfig` on Windows). Both machines must be able to reach each other on
+# the chosen port - same WiFi network or an Ethernet link between them.
+#
+# This file isn't parsed by any code yet (Phase 3 will add a config loader
+# for establish_ring()); for now, hardcode the equivalent PeerAddr list
+# directly where you call DistributedContext::init(), as shown in the
+# README's "Running across your two laptops" section.
+
+0 192.168.1.10 29500
+1 192.168.1.11 29500
