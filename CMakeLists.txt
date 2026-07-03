@@ -60,8 +60,22 @@ add_executable(test_ring_allreduce tests/test_ring_allreduce.cpp)
 target_link_libraries(test_ring_allreduce PRIVATE stakmesh_comm)
 add_test(NAME ring_allreduce COMMAND test_ring_allreduce)
 
+add_executable(test_broadcast tests/test_broadcast.cpp)
+target_link_libraries(test_broadcast PRIVATE stakmesh_comm)
+add_test(NAME broadcast COMMAND test_broadcast)
+
 if(STAKMESH_BUILD_DIST)
     add_executable(test_distributed_integration tests/test_distributed_integration.cpp)
     target_link_libraries(test_distributed_integration PRIVATE stakmesh_dist)
     add_test(NAME distributed_integration COMMAND test_distributed_integration)
+
+    add_executable(test_distributed_training_loop tests/test_distributed_training_loop.cpp)
+    target_link_libraries(test_distributed_training_loop PRIVATE stakmesh_dist)
+    add_test(NAME distributed_training_loop COMMAND test_distributed_training_loop)
+
+    # Real Phase 2 example. Not run by ctest (needs MNIST data files + a
+    # second machine) -- built so it's caught by CI/compile checks, and
+    # ready to run directly: see examples/mnist_distributed.cpp for usage.
+    add_executable(mnist_distributed examples/mnist_distributed.cpp)
+    target_link_libraries(mnist_distributed PRIVATE stakmesh_dist)
 endif()
