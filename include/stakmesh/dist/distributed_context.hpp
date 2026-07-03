@@ -45,6 +45,7 @@
 #include "../comm/socket.hpp"
 #include "../comm/topology.hpp"
 #include "../comm/ring_allreduce.hpp"
+#include "../comm/broadcast.hpp"
 
 namespace stakmesh {
 namespace dist {
@@ -61,6 +62,22 @@ public:
 
     int rank() const { return links_.rank; }
     int world_size() const { return links_.world_size; }
+
+    // Broadcasts every parameter's VALUE (not gradient) from `root` to all
+    // other ranks. Call this ONCE, right after constructing the model and
+    // BEFORE the training loop starts - it's what makes every rank's
+    // Tensor::xavier()-randomized weights converge to root's weights before
+    // a single gradient has been computed. Without this, sync_gradients()
+    // alone would keep ranks' weights drifting in lockstep from DIFFERENT
+    // starting points, which is not the same as training one shared model.
+    void broadcast_parameters(const std::vector<std::shared_ptr<stakml::Tensor>>& parameters,
+                               int root = 0) {
+        for (const auto& p : parameters) {
+            comm::ring_broadcast(p->raw_ptr(), p->num_elements(),
+                                  links_.rank, links_.world_size, root,
+                                  links_.send_sock, links_.recv_sock);
+        }
+    }
 
     // Ring-all-reduces the .grad_ buffer of every parameter that has one.
     // Parameters with requires_grad_ == false (or that simply haven't been
