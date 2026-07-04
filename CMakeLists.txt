@@ -9,18 +9,24 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug)
 endif()
 
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -Wall -Wextra -fsanitize=address,undefined")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -march=native")
+if(NOT MSVC)
+    set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -Wall -Wextra -fsanitize=address,undefined")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -march=native")
+endif()
 
 find_package(Threads REQUIRED)
 
 # ── stakmesh_comm ─────────────────────────────────────────────────────────────
-# Pure networking + collective algorithms. Zero dependency on StakML —
+# Pure networking + collective algorithms. Zero dependency on StakML -
 # operates on raw float*. This is what Phase 1 is about, and it's fully
 # testable on its own (see tests/test_ring_allreduce.cpp).
 add_library(stakmesh_comm INTERFACE)
 target_include_directories(stakmesh_comm INTERFACE include)
 target_link_libraries(stakmesh_comm INTERFACE Threads::Threads)
+
+if(WIN32)
+    target_link_libraries(stakmesh_comm INTERFACE ws2_32)
+endif()
 
 # ── StakML dependency (needed for stakmesh_dist and the integration test) ────
 # Fetched at configure time so you don't have to manage a submodule by hand.
