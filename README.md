@@ -132,14 +132,3 @@ firewall if the connection hangs). Each rank trains on half the dataset and
 prints its own loss/accuracy per epoch; because gradients sync every batch,
 both ranks' models stay identical throughout even though neither sees the
 other's data.
-
-## Repo layout
-
-```
-include/stakmesh/comm/   socket.hpp, topology.hpp, ring_allreduce.hpp, broadcast.hpp
-include/stakmesh/dist/   distributed_context.hpp
-tests/                   correctness tests (comm-only + full StakML integration)
-examples/                mnist_distributed.cpp - real Phase 2 training script
-configs/                 example peer-list configs for the 2-laptop cluster
-CMakeLists.txt
-```
