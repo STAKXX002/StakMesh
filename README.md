@@ -1,10 +1,10 @@
 # StakMesh
 
 CPU-only distributed training, built from scratch over raw TCP sockets across
-a real two-node cluster.
+a real two-node cluster (two laptops, no GPUs, no NCCL, no MPI).
 
 StakMesh is the distributed-systems layer for [StakML](https://github.com/STAKXX002/StakML) -
-a tensor/autograd library built from scratch. Where StakML answers "how
+a tensor/autograd library also built from scratch. Where StakML answers "how
 do you compute a gradient," StakMesh answers "how do multiple machines agree
 on one."
 
@@ -23,13 +23,17 @@ and coordination, not FLOPs.
 ## Architecture
 
 ```
-comm/                         StakML-agnostic. Moves raw float* over TCP. Reusable for anything (gradients, checkpoints, control messages).
-  socket.hpp                  RAII TCP wrapper: connect/listen/send_all/recv_all
-  topology.hpp                static peer list -> live ring (send_sock, recv_sock)
-  ring_allreduce.hpp          reduce-scatter + all-gather over the ring
+comm/            StakML-agnostic. Moves raw float* over TCP. Reusable for
+                  anything (gradients, checkpoints, control messages).
+  socket.hpp        RAII TCP wrapper: connect/listen/send_all/recv_all
+  topology.hpp       static peer list -> live ring (send_sock, recv_sock)
+  ring_allreduce.hpp  reduce-scatter + all-gather over the ring
+  broadcast.hpp       one rank's buffer -> every rank (used for initial weights)
+  local_addresses.hpp  this machine's own IPv4 addresses (POSIX + Windows)
+  cluster_config.hpp   parse "rank host port" file + auto-detect own rank
 
-dist/                         The ONLY layer that knows about StakML.
-  distributed_context.hpp     model.parameters() -> ring_all_reduce on .grad_
+dist/             The ONLY layer that knows about StakML.
+  distributed_context.hpp   model.parameters() -> broadcast (once) + all-reduce (every step)
 ```
 
 The design mirrors how StakML itself added its CUDA backend: the new layer
@@ -76,10 +80,16 @@ line inside StakML itself.
       Compiles and links cleanly against real StakML headers; not yet
       run against real MNIST files or a real second machine - that's the
       next step, on your actual hardware.
-- [ ] **Phase 3 - Process launcher.** A minimal `torchrun`-equivalent: spawn
-      the training script on both machines, assign ranks, coordinate
-      startup (currently you run the binary by hand on each machine with
-      `--rank` set manually - see below).
+- [x] **Phase 3 - Cluster config + automatic rank detection.** Write the
+      cluster topology down once (`configs/two_laptop_cluster.txt`), run
+      the exact same command on every machine - each process resolves
+      every entry's host and detects its own rank by matching against its
+      own IP addresses (`tests/test_cluster_config.cpp`, 9/9 including both
+      failure modes: no match, ambiguous match). `--rank`/`--peers` still
+      work for quick manual overrides. A true remote-launch mechanism (SSH
+      auto-start on all machines from one command) is still manual for
+      now - you still run the binary yourself on each machine, just
+      without hand-typing peer lists or ranks.
 - [ ] **Phase 4 - Fault tolerance & checkpointing.** Kill one node mid-run,
       resume from a checkpoint without restarting the other rank.
 - [ ] **Phase 5 - Bandwidth-aware optimizations.** Gradient compression /
@@ -114,21 +124,49 @@ You'll need the standard MNIST IDX files (`train-images-idx3-ubyte`,
 at the same relative path on both machines (default: `../data` next to your
 build directory - override with `--data-dir`).
 
-Find each machine's LAN IP (`ip addr` on the Ubuntu box, `ipconfig` on
-Windows), pick a free port, then run the SAME command on both machines with
-a different `--rank`:
+### Recommended: config mode (Phase 3)
+
+Edit `configs/two_laptop_cluster.txt` with your real addresses (Tailscale
+IPs, hostnames, or LAN IPs - anything resolvable), then run the **exact
+same command** on every machine:
 
 ```bash
-# On Device A:
+./mnist_distributed --config ../configs/two_laptop_cluster.txt
+```
+
+Each process figures out its own rank automatically by checking which
+config entry matches an IP it actually owns. If it can't find a match (or
+finds more than one - e.g. testing on one machine), it fails fast with a
+clear error rather than guessing - pass `--rank <N>` explicitly to
+override auto-detection in that case.
+
+### Manual mode (still supported)
+
+```bash
+# On laptop A:
 ./mnist_distributed --rank 0 --peers 192.168.1.10:29500,192.168.1.11:29500
 
-# On Device B:
+# On laptop B:
 ./mnist_distributed --rank 1 --peers 192.168.1.10:29500,192.168.1.11:29500
 ```
 
-Both need to reach each other on the chosen port - same WiFi network or a
-direct Ethernet link, and the port open on both sides (check the Windows
-firewall if the connection hangs). Each rank trains on half the dataset and
-prints its own loss/accuracy per epoch; because gradients sync every batch,
-both ranks' models stay identical throughout even though neither sees the
-other's data.
+### Either way
+
+Both machines need to reach each other on the chosen port - same network
+or Tailscale, and the port open on both sides (check the Windows firewall
+if the connection hangs). Each rank trains on its shard of the dataset and
+prints its own loss/accuracy per epoch; because gradients sync every
+batch, both ranks' models stay identical throughout even though neither
+sees the other's data.
+
+## Repo layout
+
+```
+include/stakmesh/comm/   socket.hpp, topology.hpp, ring_allreduce.hpp, broadcast.hpp,
+                         local_addresses.hpp, cluster_config.hpp
+include/stakmesh/dist/   distributed_context.hpp
+tests/                   correctness tests (comm-only + full StakML integration)
+examples/                mnist_distributed.cpp - real Phase 2/3 training script
+configs/                 cluster config for the 2-laptop setup (see Phase 3)
+CMakeLists.txt
+```
