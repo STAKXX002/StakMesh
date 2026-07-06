@@ -5,3 +5,4 @@ data/
 *.obj
 compile_commands.json
 .cache/
+configs/*.local.txt
