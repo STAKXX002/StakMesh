@@ -9,6 +9,10 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug)
 endif()
 
+# -fsanitize / -march=native / -Wall are GCC-Clang flags. MSVC has its own
+# (different) syntax for all three, so these are skipped there rather than
+# passed through and rejected by cl.exe. If you're building with MSVC,
+# CMAKE_CXX_FLAGS_* fall back to CMake's own defaults (/O2 for Release etc.)
 if(NOT MSVC)
     set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -Wall -Wextra -fsanitize=address,undefined")
     set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -march=native")
@@ -24,8 +28,10 @@ add_library(stakmesh_comm INTERFACE)
 target_include_directories(stakmesh_comm INTERFACE include)
 target_link_libraries(stakmesh_comm INTERFACE Threads::Threads)
 
+# Winsock needs explicit linking on Windows (MSVC or MinGW) -- POSIX has no
+# equivalent, sockets are always available.
 if(WIN32)
-    target_link_libraries(stakmesh_comm INTERFACE ws2_32)
+    target_link_libraries(stakmesh_comm INTERFACE ws2_32 iphlpapi)
 endif()
 
 # ── StakML dependency (needed for stakmesh_dist and the integration test) ────
@@ -69,6 +75,10 @@ add_test(NAME ring_allreduce COMMAND test_ring_allreduce)
 add_executable(test_broadcast tests/test_broadcast.cpp)
 target_link_libraries(test_broadcast PRIVATE stakmesh_comm)
 add_test(NAME broadcast COMMAND test_broadcast)
+
+add_executable(test_cluster_config tests/test_cluster_config.cpp)
+target_link_libraries(test_cluster_config PRIVATE stakmesh_comm)
+add_test(NAME cluster_config COMMAND test_cluster_config)
 
 if(STAKMESH_BUILD_DIST)
     add_executable(test_distributed_integration tests/test_distributed_integration.cpp)
