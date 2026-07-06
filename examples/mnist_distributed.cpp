@@ -1,9 +1,9 @@
-// mnist_distributed.cpp - Phase 2: real data-parallel training across your
-// two laptops.
+// mnist_distributed.cpp - Phase 2/3: real data-parallel training across your
+// two devices, with automatic rank detection.
 //
 // Same model, same MNIST files, same training pattern as StakML's own
-// examples/mnist_mlp.cpp - the only additions are the three distributed
-// concerns every data-parallel framework has to solve:
+// examples/mnist_mlp.cpp - the only additions are the distributed concerns
+// every data-parallel framework has to solve:
 //
 //   1. STARTING FROM THE SAME WEIGHTS
 //      broadcast_parameters() sends rank 0's randomly-initialized weights
@@ -22,13 +22,28 @@
 //      apply the identical (averaged) gradient, their weights stay
 //      identical step over step even though their inputs never match.
 //
-// USAGE (run once per machine, with a different --rank each time):
+//   4. KNOWING WHICH RANK YOU ARE (Phase 3)
+//      --config points at a file listing every machine in the cluster
+//      (see configs/two_laptop_cluster.txt). Each process resolves every
+//      entry's host and checks which one matches an IP it actually owns
+//      -- that's its rank, detected automatically. Run the EXACT SAME
+//      command on every machine; no more hand-typing --rank and risking
+//      running the wrong one on the wrong laptop.
+//
+// USAGE - config mode (recommended, same command on every machine):
+//
+//   ./mnist_distributed --config ../configs/two_laptop_cluster.txt
+//
+// USAGE - manual mode (still supported, e.g. for quick one-off tests):
 //
 //   ./mnist_distributed --rank 0 --peers 192.168.1.10:29500,192.168.1.11:29500
 //   ./mnist_distributed --rank 1 --peers 192.168.1.10:29500,192.168.1.11:29500
 //
+// --rank can be combined with --config too, to override auto-detection if
+// you ever need to (e.g. running two ranks on one machine for testing).
+//
 // Both machines need the MNIST IDX files at --data-dir (default: ../data),
-// reachable on the same LAN on the chosen ports.
+// reachable on the same LAN (or Tailscale/VPN) on the chosen ports.
 
 #include <stakml/tensor.hpp>
 #include <stakml/ops.hpp>
@@ -38,6 +53,7 @@
 #include <stakml/dataset.hpp>
 
 #include "../include/stakmesh/dist/distributed_context.hpp"
+#include "../include/stakmesh/comm/cluster_config.hpp"
 
 #include <iostream>
 #include <iomanip>
@@ -49,9 +65,8 @@
 
 using namespace stakml;
 
-// ── tiny CLI parsing - Phase 3 will replace this with a real config loader ──
 struct Args {
-    int rank = -1;
+    int rank = -1;                                  // -1 == "auto-detect from --config"
     std::vector<stakmesh::comm::PeerAddr> peers;
     std::string data_dir = "../data";
     size_t epochs = 5;
@@ -75,6 +90,9 @@ static std::vector<stakmesh::comm::PeerAddr> parse_peers(const std::string& s) {
 
 static Args parse_args(int argc, char** argv) {
     Args a;
+    std::string config_path;
+    bool have_peers = false;
+
     for (int i = 1; i < argc; ++i) {
         std::string flag = argv[i];
         auto next = [&]() -> std::string {
@@ -82,16 +100,35 @@ static Args parse_args(int argc, char** argv) {
             return argv[++i];
         };
         if (flag == "--rank") a.rank = std::stoi(next());
-        else if (flag == "--peers") a.peers = parse_peers(next());
+        else if (flag == "--peers") { a.peers = parse_peers(next()); have_peers = true; }
+        else if (flag == "--config") config_path = next();
         else if (flag == "--data-dir") a.data_dir = next();
         else if (flag == "--epochs") a.epochs = std::stoul(next());
         else if (flag == "--batch-size") a.batch_size = std::stoul(next());
         else throw std::runtime_error("unknown flag: " + flag);
     }
-    if (a.rank < 0) throw std::runtime_error("--rank is required (0-indexed)");
-    if (a.peers.size() < 2) throw std::runtime_error("--peers must list at least 2 host:port entries");
+
+    if (!config_path.empty() && have_peers) {
+        throw std::runtime_error("pass either --config or --peers, not both");
+    }
+    if (config_path.empty() && !have_peers) {
+        throw std::runtime_error("either --config <file> or --peers <list> is required");
+    }
+
+    if (!config_path.empty()) {
+        a.peers = stakmesh::comm::parse_cluster_config(config_path);
+        if (a.rank < 0) {
+            // Auto-detect: throws with a clear message if this machine
+            // matches zero or more than one entry, rather than guessing.
+            a.rank = stakmesh::comm::detect_local_rank(a.peers);
+        }
+    }
+
+    if (a.rank < 0) throw std::runtime_error("--rank is required when using --peers (not --config)");
+    if (a.peers.size() < 2) throw std::runtime_error("cluster must have at least 2 entries");
     if (a.rank >= static_cast<int>(a.peers.size()))
-        throw std::runtime_error("--rank out of range for --peers list");
+        throw std::runtime_error("--rank out of range for the peer/cluster list");
+
     return a;
 }
 
@@ -101,7 +138,8 @@ int main(int argc, char** argv) {
         args = parse_args(argc, argv);
     } catch (const std::exception& e) {
         std::cerr << "Argument error: " << e.what() << "\n"
-                  << "Usage: mnist_distributed --rank <N> --peers host:port,host:port[,...] "
+                  << "Usage: mnist_distributed --config <file> [--rank <N>]\n"
+                  << "   or: mnist_distributed --rank <N> --peers host:port,host:port[,...] "
                   << "[--data-dir ../data] [--epochs 5] [--batch-size 128]\n";
         return 1;
     }
