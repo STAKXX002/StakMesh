@@ -1,15 +1,23 @@
-# Example peer list for your actual cluster: two devices.
+# Cluster config for your actual two-machine setup.
 #
-# Format: <rank> <host> <port>
+# Format: <rank> <host> <port>   (one entry per line, ranks must start at
+# 0 and be contiguous)
 #
-# Fill in real LAN IPs before use (check with `ip addr` on the Ubuntu box,
-# `ipconfig` on Windows). Both machines must be able to reach each other on
-# the chosen port - same WiFi network or an Ethernet link between them.
+# `host` can be a raw IP OR any resolvable hostname — including a Tailscale
+# MagicDNS name (e.g. "stakxx002-win"), which is more stable than a raw IP
+# if you ever switch networks or Tailscale reassigns something.
 #
-# This file isn't parsed by any code yet (Phase 3 will add a config loader
-# for establish_ring()); for now, hardcode the equivalent PeerAddr list
-# directly where you call DistributedContext::init(), as shown in the
-# README's "Running across your two laptops" section.
+# Run the EXACT SAME command with this file on every machine:
+#
+#   ./mnist_distributed --config configs/two_laptop_cluster.txt
+#
+# Each process resolves every entry's host and checks which one matches an
+# IP address it actually owns — that's how it figures out its own rank
+# automatically. No need to pass --rank by hand (though you still can, to
+# override auto-detection, e.g. for testing).
+#
+# Fill in your real addresses below — Tailscale IPs/hostnames, LAN IPs,
+# whatever you're actually using to reach each machine.
 
 0 192.168.1.10 29500
 1 192.168.1.11 29500
