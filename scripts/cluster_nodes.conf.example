@@ -1,0 +1,40 @@
+# StakMesh cluster launcher config.
+#
+# Copy this file to cluster_nodes.conf (gitignored - it'll have your real
+# IPs/usernames/paths) and fill in your machines. One line per rank, two
+# possible formats:
+#
+#   <rank> local <command>
+#   <rank> ssh <user@host> <command>
+#
+# `command` is exactly what you'd normally type on that machine by hand to
+# start training. Whatever extra args you pass to launch_cluster.sh after
+# `--` get appended to EVERY rank's command automatically, so you don't
+# have to hardcode --epochs/--batch-size here:
+#
+#   ./scripts/launch_cluster.sh -- --epochs 5 --batch-size 512
+#
+# ── Your actual setup (Linux control machine + Windows second rank) ──
+#
+# Rank 0 (this machine, Linux) runs directly - no ssh needed since the
+# script itself runs here.
+#
+# Rank 1 (stakxx002-win) runs over ssh. Two things to get right on the
+# Windows side before this works:
+#
+#   1. OpenSSH Server must be enabled and running:
+#        Settings -> Apps -> Optional Features -> Add a feature -> OpenSSH Server
+#        (or:  Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+#         then  Start-Service sshd ; Set-Service -Name sshd -StartupType Automatic)
+#      Test it works BEFORE trying this script:
+#        ssh stakxx002@stakxx002-win
+#
+#   2. Know which shell your ssh session drops you into (cmd.exe vs
+#      PowerShell - depends on Windows OpenSSH's DefaultShell setting).
+#      The example command below assumes cmd.exe syntax ("&&" chaining,
+#      backslash paths). If you're on PowerShell, use ";" instead of "&&",
+#      and forward slashes usually still work fine.
+
+0 local cd ~/StakMesh/build && ./mnist_distributed --config ../configs/two_laptop_cluster.local.txt
+
+1 ssh stakxx002@stakxx002-win cd C:\Users\stakxx002\StakMesh\build && mnist_distributed.exe --config ../configs/two_laptop_cluster.local.txt
