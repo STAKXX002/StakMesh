@@ -86,10 +86,10 @@ line inside StakML itself.
       every entry's host and detects its own rank by matching against its
       own IP addresses (`tests/test_cluster_config.cpp`, 9/9 including both
       failure modes: no match, ambiguous match). `--rank`/`--peers` still
-      work for quick manual overrides. A true remote-launch mechanism (SSH
-      auto-start on all machines from one command) is still manual for
-      now - you still run the binary yourself on each machine, just
-      without hand-typing peer lists or ranks.
+      work for quick manual overrides. **Remote launch from one terminal**
+      (`scripts/launch_cluster.sh`) now starts every rank - local directly,
+      remote over SSH - from a single command, tagged/colored live output,
+      Ctrl+C stops all of them. See "Launching from one terminal" below.
 - [ ] **Phase 4 - Fault tolerance & checkpointing.** Kill one node mid-run,
       resume from a checkpoint without restarting the other rank.
 - [ ] **Phase 5 - Bandwidth-aware optimizations.** Gradient compression /
@@ -158,6 +158,60 @@ if the connection hangs). Each rank trains on its shard of the dataset and
 prints its own loss/accuracy per epoch; because gradients sync every
 batch, both ranks' models stay identical throughout even though neither
 sees the other's data.
+
+## Launching from one terminal
+
+Instead of manually running the same command on every machine, launch the
+whole cluster from a single terminal on one machine:
+
+```bash
+cp scripts/cluster_nodes.conf.example scripts/cluster_nodes.conf
+# edit cluster_nodes.conf: local rank + ssh target/command for remote ranks
+./scripts/launch_cluster.sh -- --epochs 5 --batch-size 512
+```
+
+The local rank runs directly; remote ranks run over SSH. Output from every
+rank streams live into the same terminal, tagged `[rank N]` and
+color-coded per rank. Ctrl+C stops everything, local and remote. Anything
+after `--` gets appended to every rank's command, so you don't have to
+edit the config file just to change `--epochs`/`--batch-size` between runs.
+
+Requires SSH access already working to any remote machine (`ssh user@host`
+should just work, no password prompt ideally - set up a key if it doesn't).
+See the comments in `cluster_nodes.conf.example` for Windows-specific setup
+(OpenSSH Server, cmd.exe vs PowerShell syntax).
+
+## Benchmarks: batch size & network overhead
+
+Early runs showed **~97% of wall-clock time was spent in `sync_gradients()`,
+not compute** - confirmed and quantified by testing batch sizes 128/256/512/1024
+on the same 2-laptop cluster (MNIST, 3 epochs, 30k samples/rank):
+
+| Batch size | Batches/epoch | Avg epoch time | Time/batch |
+|---|---|---|---|
+| 128  | 234 | 75.2s | 0.321s |
+| 256  | 117 | 39.6s | 0.339s |
+| 512  | 58  | 19.4s | 0.335s |
+| 1024 | 29  | 9.7s  | 0.334s |
+
+Per-batch time stays roughly constant (~0.32-0.34s) across an 8x range of
+batch sizes - the cost is dominated by a near-fixed round-trip overhead per
+`sync_gradients()` call (2 sequential ring steps at world_size=2), not by
+the amount of gradient data moved (~437KB for this model). Bigger batches
+help mainly by amortizing that fixed cost over more samples, not by moving
+less data per byte.
+
+Root-caused the fixed cost itself: `tailscale ping` between the two
+laptops (same WiFi network) showed ~101ms RTT; a raw `ping` to the same IP
+(bypassing Tailscale entirely) showed the same instability (12-185ms,
+~60ms stddev) - so it wasn't a Tailscale/routing issue, it was the WiFi
+link itself. Switching both machines to a phone hotspot with raw LAN IPs
+(no Tailscale) dropped batch-128 epoch time from 75.2s to ~29s (~26.5s
+steady-state) - about a 2.6-2.8x reduction, consistent with the same
+latency-bound model at a smaller fixed cost per round trip (~160ms -> ~57-62ms).
+Still above a healthy LAN's sub-5ms floor, so there's likely a further,
+uninvestigated cause (candidate: WiFi power-save mode on one or both
+laptops - `iw dev <iface> get power_save`) worth checking before Phase 5.
 
 ## Repo layout
 
