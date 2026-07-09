@@ -6,3 +6,4 @@ data/
 compile_commands.json
 .cache/
 configs/*.local.txt
+scripts/cluster_nodes.conf
