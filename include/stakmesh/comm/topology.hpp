@@ -65,14 +65,46 @@ inline RingLinks establish_ring(int my_rank, const std::vector<PeerAddr>& peers,
     // Start listening for the predecessor's connection on a background
     // thread - listen_one() blocks until someone connects, and we also
     // need to connect() outward at the same time.
+    //
+    // Two failure-handling subtleties here, both found by actually
+    // crashing on an unreachable peer, not by inspection:
+    //
+    //   1. An exception escaping a std::thread's top-level function is
+    //      ALWAYS fatal (std::terminate, unconditionally) - so listen_one()
+    //      failing must be caught INSIDE the lambda. The failure still
+    //      surfaces below via `recv_sock` staying invalid.
+    //
+    //   2. If connect() throws (peer unreachable), this function would
+    //      previously return via an exception while `listener` was still
+    //      joinable - a joinable std::thread's destructor ALSO calls
+    //      std::terminate(), unconditionally, even during unwinding. We
+    //      can't just add a `listener.join()` on this path either: the
+    //      listener may be blocked in accept() with no timeout (only
+    //      established connections get io_timeout_ms - a socket that's
+    //      still just listening has no peer yet to time out on), so
+    //      joining could hang exactly as badly as the bug being fixed.
+    //      detach() is correct here: this is a failure path, not the hot
+    //      path, and the thread dies with the process either way.
     TcpSocket recv_sock;
     std::thread listener([&]() {
-        recv_sock = TcpSocket::listen_one(my_port);
+        try {
+            recv_sock = TcpSocket::listen_one(my_port, io_timeout_ms);
+        } catch (...) {
+            // swallowed deliberately - checked via recv_sock.valid() below
+        }
     });
 
-    // Connect outward to our successor. Retries internally, so it's fine
-    // if that rank hasn't called listen() yet.
-    TcpSocket send_sock = TcpSocket::connect(peers[next_rank].host, peers[next_rank].port);
+    TcpSocket send_sock;
+    try {
+        // Connect outward to our successor. Retries internally, so it's
+        // fine if that rank hasn't called listen() yet.
+        send_sock = TcpSocket::connect(peers[next_rank].host, peers[next_rank].port,
+                                        connect_timeout_ms, /*retry_delay_ms=*/100,
+                                        io_timeout_ms);
+    } catch (...) {
+        listener.detach();
+        throw;
+    }
 
     listener.join();
     if (!recv_sock.valid()) {

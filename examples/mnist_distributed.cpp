@@ -173,7 +173,14 @@ int main(int argc, char** argv) {
 
     // ── 1. Establish the ring BEFORE touching data - if a peer is
     //    unreachable, fail fast instead of loading MNIST first. ──
-    auto ctx = stakmesh::dist::DistributedContext::init(args.rank, args.peers);
+    stakmesh::dist::DistributedContext ctx = [&]() {
+        try {
+            return stakmesh::dist::DistributedContext::init(args.rank, args.peers);
+        } catch (const std::exception& e) {
+            std::cerr << "[rank " << args.rank << "] Failed to establish the ring: " << e.what() << "\n";
+            std::exit(1);
+        }
+    }();
 
     // ── 2. Load full datasets on every rank, then take this rank's shard
     //    of the TRAINING set only. Every rank evaluates on the full test
@@ -213,14 +220,47 @@ int main(int argc, char** argv) {
     });
     optim::Adam opt(model.parameters(), 1e-3f);
 
-    // ── 4. THE critical distributed step: force every rank onto the same
-    //    starting weights before a single gradient is computed. ──
-    ctx.broadcast_parameters(model.parameters(), /*root=*/0);
+    // ── 4. Either resume from this rank's own last checkpoint, or start
+    //    fresh with the usual broadcast-from-rank-0 (Phase 2's approach).
+    //    These are mutually exclusive: a resumed checkpoint already holds
+    //    real, trained (and, across ranks, identical-by-construction)
+    //    weights - broadcasting rank 0's weights over top of that would
+    //    silently discard everyone else's resumed state and every rank's
+    //    Adam momentum, replacing it with whatever rank 0 happened to load
+    //    (or a fresh random init, if rank 0 isn't resuming). ──
+    size_t start_epoch = 0;
+    const std::string checkpoint_path =
+        args.checkpoint_dir + "/rank" + std::to_string(args.rank) + "_latest.bin";
+
+    if (args.resume) {
+        try {
+            auto info = stakmesh::dist::load_checkpoint(checkpoint_path, model.parameters(), opt);
+            start_epoch = static_cast<size_t>(info.epoch) + 1;
+            std::cout << "[rank " << args.rank << "] Resumed from " << checkpoint_path
+                      << " (completed epoch " << info.epoch << ", continuing at epoch "
+                      << start_epoch + 1 << ")\n";
+        } catch (const std::exception& e) {
+            std::cerr << "[rank " << args.rank << "] --resume failed: " << e.what() << "\n";
+            return 1;
+        }
+    } else {
+        ctx.broadcast_parameters(model.parameters(), /*root=*/0);
+    }
+
+    if (args.checkpoint_every > 0) {
+        std::filesystem::create_directories(args.checkpoint_dir);
+    }
+
+    if (start_epoch >= args.epochs) {
+        std::cout << "[rank " << args.rank << "] Checkpoint is already at epoch "
+                  << start_epoch << ", nothing to do for --epochs " << args.epochs << ".\n";
+        return 0;
+    }
 
     const size_t train_batches = local_samples / args.batch_size;
     const size_t test_batches = test_data.num_samples / args.batch_size;
 
-    for (size_t epoch = 0; epoch < args.epochs; ++epoch) {
+    for (size_t epoch = start_epoch; epoch < args.epochs; ++epoch) {
         auto start_time = std::chrono::high_resolution_clock::now();
 
         // ─── Training phase, on this rank's shard only ───────────────────
@@ -284,6 +324,20 @@ int main(int argc, char** argv) {
                   << " | Local Train Acc: " << std::setprecision(2) << train_acc << "%"
                   << " | Test Acc: " << std::setprecision(2) << test_acc << "%"
                   << " | Time: " << std::setprecision(2) << elapsed.count() << "s\n";
+
+        // ─── Checkpoint (this rank's own file, overwritten each save -
+        //     "latest" is the only thing --resume ever looks for) ───────
+        if (args.checkpoint_every > 0 && (epoch + 1) % args.checkpoint_every == 0) {
+            try {
+                stakmesh::dist::save_checkpoint(checkpoint_path, model.parameters(), opt,
+                                                 static_cast<int>(epoch), args.rank);
+            } catch (const std::exception& e) {
+                // Don't abort a training run over a checkpoint write failure
+                // (e.g. disk full) - just make sure it's loud, not silent.
+                std::cerr << "[rank " << args.rank << "] WARNING: checkpoint save failed: "
+                          << e.what() << "\n";
+            }
+        }
     }
 
     if (is_root) std::cout << "\nRun complete!\n";
