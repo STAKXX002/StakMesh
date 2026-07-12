@@ -21,6 +21,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -29,6 +30,13 @@ using namespace stakml;
 using namespace stakmesh::dist;
 
 static bool g_all_ok = true;
+
+// /tmp doesn't exist on Windows - std::filesystem::temp_directory_path()
+// resolves to the right place on every platform (TMPDIR/TEMP/TMP, or a
+// sane default if none of those are set).
+static std::string temp_path(const std::string& filename) {
+    return (std::filesystem::temp_directory_path() / filename).string();
+}
 
 static void check(bool cond, const std::string& what) {
     if (cond) {
@@ -73,7 +81,7 @@ static bool params_match(const std::vector<std::shared_ptr<Tensor>>& a,
 }
 
 static void test_sgd_roundtrip() {
-    const std::string path = "/tmp/stakmesh_test_ckpt_sgd.bin";
+    const std::string path = temp_path("stakmesh_test_ckpt_sgd.bin");
 
     nn::Linear trained(5, 3);
     optim::SGD opt(trained.parameters(), 0.1f);
@@ -97,7 +105,7 @@ static void test_sgd_roundtrip() {
 }
 
 static void test_adam_roundtrip() {
-    const std::string path = "/tmp/stakmesh_test_ckpt_adam.bin";
+    const std::string path = temp_path("stakmesh_test_ckpt_adam.bin");
 
     nn::Linear trained(5, 3);
     optim::Adam opt(trained.parameters(), 0.01f);
@@ -151,7 +159,7 @@ static void test_adam_roundtrip() {
 }
 
 static void test_architecture_mismatch_throws() {
-    const std::string path = "/tmp/stakmesh_test_ckpt_shape.bin";
+    const std::string path = temp_path("stakmesh_test_ckpt_shape.bin");
 
     nn::Linear small(5, 3);
     optim::SGD opt(small.parameters(), 0.1f);
@@ -172,7 +180,7 @@ static void test_architecture_mismatch_throws() {
 }
 
 static void test_optimizer_mismatch_throws() {
-    const std::string path = "/tmp/stakmesh_test_ckpt_opt.bin";
+    const std::string path = temp_path("stakmesh_test_ckpt_opt.bin");
 
     nn::Linear model(5, 3);
     optim::Adam adam_opt(model.parameters(), 0.01f);
