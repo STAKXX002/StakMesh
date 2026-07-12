@@ -93,6 +93,10 @@ if(STAKMESH_BUILD_DIST)
     target_link_libraries(test_distributed_sequential PRIVATE stakmesh_dist)
     add_test(NAME distributed_sequential COMMAND test_distributed_sequential)
 
+    add_executable(test_checkpoint tests/test_checkpoint.cpp)
+    target_link_libraries(test_checkpoint PRIVATE stakmesh_dist)
+    add_test(NAME checkpoint COMMAND test_checkpoint)
+
     # Real Phase 2 example. Not run by ctest (needs MNIST data files + a
     # second machine) -- built so it's caught by CI/compile checks, and
     # ready to run directly: see examples/mnist_distributed.cpp for usage.
