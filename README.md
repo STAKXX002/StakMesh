@@ -102,6 +102,25 @@ line inside StakML itself.
       restart both processes, `--resume`, confirm both ranks stay in sync
       with each other post-resume exactly as they would mid an
       uninterrupted run). See "Checkpointing & resuming" below.
+- [x] **Phase 4b - Fault detection.** `send_all`/`recv_all` now carry a
+      configurable I/O timeout (default 30s, applied via `SO_RCVTIMEO`/
+      `SO_SNDTIMEO` right after the ring is established) - a dead or
+      silent peer now fails with a clear "timed out" error instead of
+      hanging forever, distinct from a peer closing the connection
+      cleanly (`tests/test_socket_timeout.cpp`, 10/10).
+
+      Also found and fixed a real crash while testing this, not just the
+      happy path: an unreachable peer during the *initial* ring bootstrap
+      used to call `std::terminate()` directly (confirmed via gdb
+      backtrace) rather than throwing a catchable exception - a background
+      `std::thread` was still joinable when `establish_ring()` exited via
+      exception, and a joinable thread's destructor calling `terminate()`
+      mid-unwind is standard (if brutal) C++ behavior. Fixed by catching
+      inside the thread (so nothing ever escapes the thread boundary -
+      *that's* always fatal too) and `detach()`-ing on the failure path
+      instead of `join()`-ing (joining could hang just as badly, since the
+      listening side has no timeout on `accept()` itself, only on already-
+      established connections).
 - [ ] **Phase 5 - Bandwidth-aware optimizations.** Gradient compression /
       quantization, since home WiFi/Ethernet is a real constraint here, not
       a theoretical one.

@@ -80,6 +80,10 @@ add_executable(test_cluster_config tests/test_cluster_config.cpp)
 target_link_libraries(test_cluster_config PRIVATE stakmesh_comm)
 add_test(NAME cluster_config COMMAND test_cluster_config)
 
+add_executable(test_socket_timeout tests/test_socket_timeout.cpp)
+target_link_libraries(test_socket_timeout PRIVATE stakmesh_comm)
+add_test(NAME socket_timeout COMMAND test_socket_timeout)
+
 if(STAKMESH_BUILD_DIST)
     add_executable(test_distributed_integration tests/test_distributed_integration.cpp)
     target_link_libraries(test_distributed_integration PRIVATE stakmesh_dist)
