@@ -46,7 +46,11 @@ struct RingLinks {
 
 // `peers` must have exactly `world_size` entries, indexed by rank, giving
 // the (host, port) each rank listens on. `my_rank` is this process's rank.
-inline RingLinks establish_ring(int my_rank, const std::vector<PeerAddr>& peers) {
+// `io_timeout_ms` bounds every send/recv AFTER the ring is up (see the
+// CONCEPT note in socket.hpp) - 0 disables it (blocks forever, matching
+// pre-Phase-4b behavior).
+inline RingLinks establish_ring(int my_rank, const std::vector<PeerAddr>& peers,
+                                 int io_timeout_ms = 30000, int connect_timeout_ms = 10000) {
     const int world_size = static_cast<int>(peers.size());
     if (world_size < 2) {
         throw std::invalid_argument("establish_ring: need at least 2 ranks");

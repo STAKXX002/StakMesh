@@ -67,10 +67,13 @@ namespace dist {
 class DistributedContext {
 public:
     // Establishes the ring for this process. Call once at startup, before
-    // the training loop, on every rank simultaneously.
-    static DistributedContext init(int rank, const std::vector<comm::PeerAddr>& peers) {
+    // the training loop, on every rank simultaneously. `io_timeout_ms`
+    // bounds every send/recv for the LIFETIME of the ring (not just setup)
+    // - see socket.hpp's CONCEPT note on why. 0 disables it.
+    static DistributedContext init(int rank, const std::vector<comm::PeerAddr>& peers,
+                                    int io_timeout_ms = 30000) {
         DistributedContext ctx;
-        ctx.links_ = comm::establish_ring(rank, peers);
+        ctx.links_ = comm::establish_ring(rank, peers, io_timeout_ms);
         return ctx;
     }
 
