@@ -38,6 +38,24 @@
 //   actual connect/bind/listen/accept/send/recv call shapes) is identical,
 //   which is why this stays one file with #ifdef branches rather than two
 //   parallel implementations.
+//
+// CONCEPT: Why does every socket get an I/O timeout, not just connect()?
+//
+//   connect() already retried/timed out on its own - that only covers ring
+//   BOOTSTRAP, before any training happens. Once the ring is up, send_all/
+//   recv_all are called every single batch for the rest of the run, and
+//   until Phase 4b they had NO timeout at all: if a peer died or the
+//   network dropped mid-training, the surviving rank would block in
+//   recv() forever - no error, no way to know something's wrong, just a
+//   process that looks alive but will never make progress again.
+//
+//   SO_RCVTIMEO/SO_SNDTIMEO turn that into a bounded wait: past
+//   `io_timeout_ms` (default 30s - generous relative to the ~0.3s/batch
+//   worst case measured on bad WiFi, but still a real bound), send_all/
+//   recv_all throw a SocketError that says "timed out", distinct from
+//   "peer closed the connection cleanly" or another kind of error - useful
+//   for telling "the network is being slow" apart from "that machine is
+//   actually gone" when you're staring at a crashed training run later.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <string>
@@ -100,11 +118,19 @@ inline void ensure_winsock_initialized() {
 inline std::string last_socket_error() {
     return "WSA error " + std::to_string(WSAGetLastError());
 }
+
+inline bool last_error_was_timeout() {
+    return WSAGetLastError() == WSAETIMEDOUT;
+}
 #else
 inline void ensure_winsock_initialized() {}  // no-op on POSIX
 
 inline std::string last_socket_error() {
     return std::strerror(errno);
+}
+
+inline bool last_error_was_timeout() {
+    return errno == EAGAIN || errno == EWOULDBLOCK;
 }
 #endif
 
@@ -140,7 +166,8 @@ public:
     //    `timeout_ms` total. Retries matter for ring bootstrap: rank r+1
     //    may not have called listen() yet when rank r tries to connect. ──
     static TcpSocket connect(const std::string& host, int port,
-                              int timeout_ms = 10000, int retry_delay_ms = 100) {
+                              int timeout_ms = 10000, int retry_delay_ms = 100,
+                              int io_timeout_ms = 30000) {
         ensure_winsock_initialized();
 
         addrinfo hints{};
@@ -168,6 +195,7 @@ public:
                     freeaddrinfo(res);
                     TcpSocket sock(h);
                     sock.set_nodelay();
+                    sock.set_io_timeout(io_timeout_ms);
                     return sock;
                 }
                 last_error = last_socket_error();
@@ -187,7 +215,7 @@ public:
 
     // ── Server side: bind to `port` on all interfaces, listen, and block
     //    until exactly one peer connects. Returns the accepted connection. ──
-    static TcpSocket listen_one(int port) {
+    static TcpSocket listen_one(int port, int io_timeout_ms = 30000) {
         ensure_winsock_initialized();
 
         SocketHandle listen_h = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -228,16 +256,23 @@ public:
 
         TcpSocket sock(conn_h);
         sock.set_nodelay();
+        sock.set_io_timeout(io_timeout_ms);
         return sock;
     }
 
-    // ── send_all / recv_all: loop until `len` bytes are fully transferred. ──
+    // ── send_all / recv_all: loop until `len` bytes are fully transferred,
+    //    or the socket's I/O timeout (set in connect()/listen_one()) fires. ──
     void send_all(const void* data, size_t len) const {
         const char* p = static_cast<const char*>(data);
         size_t sent = 0;
         while (sent < len) {
             SendRecvLen chunk = clamp_chunk(len - sent);
             auto n = ::send(handle_, p + sent, chunk, 0);
+            if (n < 0 && last_error_was_timeout()) {
+                throw SocketError("send_all: timed out after " + std::to_string(sent) + "/" +
+                                   std::to_string(len) + " bytes - peer may be dead, or the "
+                                   "network is down/too slow (see io_timeout_ms)");
+            }
             if (n <= 0) {
                 throw SocketError("send_all: connection error/closed after " +
                                    std::to_string(sent) + "/" + std::to_string(len) +
@@ -253,8 +288,19 @@ public:
         while (received < len) {
             SendRecvLen chunk = clamp_chunk(len - received);
             auto n = ::recv(handle_, p + received, chunk, 0);
-            if (n <= 0) {
-                throw SocketError("recv_all: connection error/closed after " +
+            if (n == 0) {
+                throw SocketError("recv_all: peer closed the connection cleanly after " +
+                                   std::to_string(received) + "/" + std::to_string(len) +
+                                   " bytes");
+            }
+            if (n < 0 && last_error_was_timeout()) {
+                throw SocketError("recv_all: timed out waiting for data after " +
+                                   std::to_string(received) + "/" + std::to_string(len) +
+                                   " bytes - peer may be dead, or the network is down/too "
+                                   "slow (see io_timeout_ms)");
+            }
+            if (n < 0) {
+                throw SocketError("recv_all: connection error after " +
                                    std::to_string(received) + "/" + std::to_string(len) +
                                    " bytes - " + last_socket_error());
             }
@@ -286,6 +332,25 @@ private:
 #else
         int yes = 1;
         ::setsockopt(handle_, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+#endif
+    }
+
+    // timeout_ms <= 0 means "no timeout" (block forever, the old default
+    // behavior) - an intentional escape hatch, not just an oversight.
+    void set_io_timeout(int timeout_ms) {
+        if (timeout_ms <= 0) return;
+#ifdef _WIN32
+        DWORD tv = static_cast<DWORD>(timeout_ms);
+        ::setsockopt(handle_, SOL_SOCKET, SO_RCVTIMEO,
+                     reinterpret_cast<const char*>(&tv), sizeof(tv));
+        ::setsockopt(handle_, SOL_SOCKET, SO_SNDTIMEO,
+                     reinterpret_cast<const char*>(&tv), sizeof(tv));
+#else
+        struct timeval tv{};
+        tv.tv_sec = timeout_ms / 1000;
+        tv.tv_usec = (timeout_ms % 1000) * 1000;
+        ::setsockopt(handle_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        ::setsockopt(handle_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 #endif
     }
 
