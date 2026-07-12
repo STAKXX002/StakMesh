@@ -90,8 +90,18 @@ line inside StakML itself.
       (`scripts/launch_cluster.sh`) now starts every rank - local directly,
       remote over SSH - from a single command, tagged/colored live output,
       Ctrl+C stops all of them. See "Launching from one terminal" below.
-- [ ] **Phase 4 - Fault tolerance & checkpointing.** Kill one node mid-run,
-      resume from a checkpoint without restarting the other rank.
+- [x] **Phase 4a - Checkpointing.** Each rank saves its own weights + Adam
+      moment state (m_/v_/t_) + epoch number locally every N epochs, and
+      `--resume` picks training back up from there. Shape and
+      optimizer-type mismatches are checked before touching any data and
+      throw with a clear message rather than silently loading garbage.
+      Verified both at the object level (save into one model/optimizer,
+      load into a fresh one, take one more step, confirm it lands
+      bit-identical to continuing the original - `tests/test_checkpoint.cpp`,
+      13/13) and end-to-end over a real 2-rank TCP run (train 2 epochs,
+      restart both processes, `--resume`, confirm both ranks stay in sync
+      with each other post-resume exactly as they would mid an
+      uninterrupted run). See "Checkpointing & resuming" below.
 - [ ] **Phase 5 - Bandwidth-aware optimizations.** Gradient compression /
       quantization, since home WiFi/Ethernet is a real constraint here, not
       a theoretical one.
@@ -158,6 +168,38 @@ if the connection hangs). Each rank trains on its shard of the dataset and
 prints its own loss/accuracy per epoch; because gradients sync every
 batch, both ranks' models stay identical throughout even though neither
 sees the other's data.
+
+## Checkpointing & resuming
+
+```bash
+# every N epochs (default: every epoch), each rank saves its OWN weights +
+# Adam state locally - no flag needed, it's on by default:
+./mnist_distributed --config ../configs/two_laptop_cluster.local.txt --epochs 10
+
+# training stopped (crash, Ctrl+C, whatever) after a few epochs? Same
+# command, same flag on every machine, plus --resume:
+./mnist_distributed --config ../configs/two_laptop_cluster.local.txt --epochs 10 --resume
+```
+
+Each rank writes to `<checkpoint-dir>/rank<N>_latest.bin` (default dir:
+`checkpoints/`, overridable with `--checkpoint-dir`; save frequency with
+`--checkpoint-every <N>`, 0 disables it) and `--resume` loads that same
+rank's own file - no copying files between machines, consistent with the
+project's "same command on every machine" approach from Phase 3.
+
+Why per-rank local files instead of one shared checkpoint: gradients sync
+every batch and every rank starts from the same broadcast, so all ranks'
+weights (and Adam momentum) stay bit-identical throughout training - any
+rank's checkpoint is numerically interchangeable with any other's. That
+means each rank can restart independently from its own local disk without
+needing a file from a machine that might itself be the one that just died
+- relevant groundwork for Phase 4b, where a dead peer needs to become a
+recoverable event instead of a hang.
+
+`--resume` on a checkpoint that doesn't exist, or one saved by a
+different-shaped model, or one saved with a different optimizer, fails
+loudly with a specific message and exit code 1 rather than loading
+corrupted/partial state.
 
 ## Launching from one terminal
 

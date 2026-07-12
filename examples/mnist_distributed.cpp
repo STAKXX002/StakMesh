@@ -30,6 +30,13 @@
 //      command on every machine; no more hand-typing --rank and risking
 //      running the wrong one on the wrong laptop.
 //
+//   5. SURVIVING A CRASH (Phase 4)
+//      Every rank saves its own weights + Adam momentum + epoch number to
+//      <checkpoint-dir>/rank<N>_latest.bin after each epoch (configurable
+//      via --checkpoint-every). Pass --resume (same flag on every machine,
+//      same as --config) to pick back up from there instead of starting
+//      over - each rank resumes its own file, no cross-machine copying.
+//
 // USAGE - config mode (recommended, same command on every machine):
 //
 //   ./mnist_distributed --config ../configs/two_laptop_cluster.txt
@@ -53,6 +60,7 @@
 #include <stakml/dataset.hpp>
 
 #include "../include/stakmesh/dist/distributed_context.hpp"
+#include "../include/stakmesh/dist/checkpoint.hpp"
 #include "../include/stakmesh/comm/cluster_config.hpp"
 
 #include <iostream>
@@ -62,6 +70,7 @@
 #include <vector>
 #include <sstream>
 #include <algorithm>
+#include <filesystem>
 
 using namespace stakml;
 
@@ -71,6 +80,9 @@ struct Args {
     std::string data_dir = "../data";
     size_t epochs = 5;
     size_t batch_size = 128;
+    std::string checkpoint_dir = "checkpoints";
+    size_t checkpoint_every = 1;    // save every N epochs; 0 disables checkpointing
+    bool resume = false;            // load <checkpoint_dir>/rank<N>_latest.bin before training
 };
 
 static std::vector<stakmesh::comm::PeerAddr> parse_peers(const std::string& s) {
@@ -105,6 +117,9 @@ static Args parse_args(int argc, char** argv) {
         else if (flag == "--data-dir") a.data_dir = next();
         else if (flag == "--epochs") a.epochs = std::stoul(next());
         else if (flag == "--batch-size") a.batch_size = std::stoul(next());
+        else if (flag == "--checkpoint-dir") a.checkpoint_dir = next();
+        else if (flag == "--checkpoint-every") a.checkpoint_every = std::stoul(next());
+        else if (flag == "--resume") a.resume = true;   // no value - a flag, not an option
         else throw std::runtime_error("unknown flag: " + flag);
     }
 
@@ -140,7 +155,10 @@ int main(int argc, char** argv) {
         std::cerr << "Argument error: " << e.what() << "\n"
                   << "Usage: mnist_distributed --config <file> [--rank <N>]\n"
                   << "   or: mnist_distributed --rank <N> --peers host:port,host:port[,...] "
-                  << "[--data-dir ../data] [--epochs 5] [--batch-size 128]\n";
+                  << "[--data-dir ../data] [--epochs 5] [--batch-size 128]\n"
+                  << "Checkpointing: [--checkpoint-dir checkpoints] [--checkpoint-every 1] [--resume]\n"
+                  << "  --resume loads <checkpoint-dir>/rank<N>_latest.bin (same flag, every machine -\n"
+                  << "  each rank resumes its own file, matching the auto-rank-detection philosophy).\n";
         return 1;
     }
 
