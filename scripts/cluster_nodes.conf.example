@@ -14,12 +14,12 @@
 #
 #   ./scripts/launch_cluster.sh -- --epochs 5 --batch-size 512
 #
-# ── Your actual setup (Linux control machine + Windows second rank) ──
+# ── Example setup (Linux control machine + Windows second rank) ──
 #
 # Rank 0 (this machine, Linux) runs directly - no ssh needed since the
 # script itself runs here.
 #
-# Rank 1 (stakxx002-win) runs over ssh. Two things to get right on the
+# Rank 1 (the Windows machine) runs over ssh. Two things to get right on the
 # Windows side before this works:
 #
 #   1. OpenSSH Server must be enabled and running:
@@ -27,14 +27,21 @@
 #        (or:  Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
 #         then  Start-Service sshd ; Set-Service -Name sshd -StartupType Automatic)
 #      Test it works BEFORE trying this script:
-#        ssh stakxx002@stakxx002-win
+#        ssh <user>@<windows-hostname>
 #
-#   2. Know which shell your ssh session drops you into (cmd.exe vs
-#      PowerShell - depends on Windows OpenSSH's DefaultShell setting).
-#      The example command below assumes cmd.exe syntax ("&&" chaining,
-#      backslash paths). If you're on PowerShell, use ";" instead of "&&",
-#      and forward slashes usually still work fine.
+#   2. Know which shell your ssh session drops you into - matters a lot,
+#      since cmd.exe and PowerShell have incompatible syntax (";" vs "&&"
+#      for chaining, and PowerShell needs ".\" before a bare .exe name -
+#      it never searches the current directory, unlike cmd.exe). Check:
+#        ssh <user>@<windows-hostname> "$PSVersionTable"
+#      Prints a version table -> PowerShell. Prints an error like
+#      "'$PSVersionTable' is not recognized" -> cmd.exe.
+#
+#      The example below assumes PowerShell (";" chaining, ".\" prefix) -
+#      the safer default, since it works whether you're on Windows
+#      PowerShell 5.1 or PowerShell 7+ ("&&" only works on 7+). If you
+#      confirmed cmd.exe above, switch to: cd <path> && mnist_distributed.exe ...
 
 0 local cd ~/StakMesh/build && ./mnist_distributed --config ../configs/two_laptop_cluster.local.txt
 
-1 ssh stakxx002@stakxx002-win cd C:\Users\stakxx002\StakMesh\build && mnist_distributed.exe --config ../configs/two_laptop_cluster.local.txt
+1 ssh <user>@<windows-hostname> cd C:\path\to\StakMesh\build ; .\mnist_distributed.exe --config ../configs/two_laptop_cluster.local.txt
