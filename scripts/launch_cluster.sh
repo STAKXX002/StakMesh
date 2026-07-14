@@ -71,8 +71,8 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     case "$mode" in
         local)
             cmd="$rest $EXTRA_ARGS"
-            echo -e "${prefix} starting locally:"
-            echo -e "${prefix}   $cmd"
+            printf '%s\n' "${prefix} starting locally:"
+            printf '%s\n' "${prefix}   $cmd"
             # NOTE: process substitution (not a `| sed` pipeline) so that $!
             # below is the PID of the actual command, not the sed formatter.
             # A `| pipe` backgrounds sed as the last stage and $! grabs
@@ -83,8 +83,8 @@ while IFS= read -r line || [[ -n "$line" ]]; do
         ssh)
             read -r target sshcmd <<< "$rest"
             cmd="$sshcmd $EXTRA_ARGS"
-            echo -e "${prefix} starting on ${target} via ssh:"
-            echo -e "${prefix}   $cmd"
+            printf '%s\n' "${prefix} starting on ${target} via ssh:"
+            printf '%s\n' "${prefix}   $cmd"
             # -t allocates a pseudo-tty so the remote process gets SIGHUP
             # (and dies) when the ssh connection is closed on Ctrl+C.
             ssh -t "$target" "$cmd" > >(sed -u "s/^/${prefix} /") 2>&1 &

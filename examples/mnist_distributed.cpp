@@ -148,6 +148,19 @@ static Args parse_args(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
+    // Force std::cout to flush after every write, not just on exit or a
+    // buffer-fill. Without this, C++ streams are only LINE-buffered when
+    // connected to a real terminal - the moment output goes through a
+    // pipe (exactly what happens when launched via launch_cluster.sh:
+    // piped through `sed` locally, and through a non-pty ssh channel
+    // remotely), it silently switches to FULLY buffered instead. With a
+    // ~4KB buffer and ~100 bytes/epoch line, up to ~30 epochs of real,
+    // successful training could complete with NOTHING visible yet - not
+    // hung, just invisible until the buffer happens to fill or the
+    // process exits. Found by testing launch_cluster.sh for real, not by
+    // inspection - it looked exactly like a hang.
+    std::cout.setf(std::ios::unitbuf);
+
     Args args;
     try {
         args = parse_args(argc, argv);
