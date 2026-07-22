@@ -1,0 +1,101 @@
+name: Build cluster binaries
+#
+# Builds mnist_distributed for both machine types actually used in the
+# StakMesh cluster (Linux and Windows/MinGW), with -march=native turned OFF
+# (STAKMESH_NATIVE_ARCH=OFF - see CMakeLists.txt) so the resulting binaries
+# run on any x86_64 machine, not just the one that compiled them.
+#
+# Goal: adding/refreshing a node should be "download the right binary from
+# the latest run" instead of "clone the repo and build it there".
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+  release:
+    types: [created]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DSTAKMESH_NATIVE_ARCH=OFF
+
+      - name: Build
+        run: cmake --build build -j
+
+      # Sanity check: if the build is broken, don't ship a broken binary.
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnist_distributed-linux-x86_64
+          path: build/mnist_distributed
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      # MSYS2/MinGW-w64, not MSVC - matches the toolchain the Windows
+      # cluster machine actually builds with locally (see README/CMakeLists
+      # comments on MinGW vs MSVC flag differences).
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-ninja
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DSTAKMESH_NATIVE_ARCH=OFF
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnist_distributed-windows-x86_64
+          path: build/mnist_distributed.exe
+          if-no-files-found: error
+
+  # Only runs when a GitHub Release is created (e.g. `git tag vX && git push
+  # --tags` then create a release from it): attaches both binaries to it, so
+  # "grab the latest release" is a stable target instead of hunting through
+  # workflow run artifacts.
+  attach-to-release:
+    if: github.event_name == 'release'
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/mnist_distributed-linux-x86_64/mnist_distributed
+            artifacts/mnist_distributed-windows-x86_64/mnist_distributed.exe
