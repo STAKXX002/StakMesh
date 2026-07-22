@@ -15,6 +15,19 @@
 #
 #        ./scripts/launch_cluster.sh -- --epochs 5 --batch-size 512
 #
+# Adding/refreshing a remote node without a manual clone+build there:
+#   Add a line to cluster_nodes.conf:
+#
+#     deploy <rank> <local-binary-path> <remote-dest-path>
+#
+#   then pass --deploy as the first argument. Before any rank starts, this
+#   scp's <local-binary-path> (e.g. your own build/mnist_distributed, or a
+#   binary downloaded from a CI run - see .github/workflows/build-binaries.yml)
+#   to <remote-dest-path> on that rank's ssh target. Build once on whichever
+#   machine, deploy everywhere else on the tailnet:
+#
+#     ./scripts/launch_cluster.sh --deploy -- --epochs 5
+#
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,6 +38,14 @@ if [[ ! -f "$NODES_FILE" ]]; then
     echo "  Copy scripts/cluster_nodes.conf.example to scripts/cluster_nodes.conf" >&2
     echo "  and fill in your actual machines first." >&2
     exit 1
+fi
+
+# --deploy (must come before "--", if present) scp's binaries out to remote
+# ranks per any "deploy" lines in the config, before launching anything.
+DO_DEPLOY=0
+if [[ "${1:-}" == "--deploy" ]]; then
+    DO_DEPLOY=1
+    shift
 fi
 
 # Everything after a literal "--" is forwarded to every rank's command.
@@ -56,6 +77,48 @@ echo "════════════════════════�
 echo "  StakMesh cluster launcher"
 echo "══════════════════════════════════════════════════════════"
 
+# First pass: rank -> ssh target, so "deploy" lines (which only name a rank,
+# not a host - the host already lives on that rank's ssh line) know where to
+# scp to. Only ssh-mode ranks need this; a "local" rank deploys nowhere.
+declare -A RANK_TARGET
+while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line//[[:space:]]/}" ]] && continue
+    read -r rank mode rest <<< "$line"
+    if [[ "$mode" == "ssh" ]]; then
+        read -r target _ <<< "$rest"
+        RANK_TARGET["$rank"]="$target"
+    fi
+done < "$NODES_FILE"
+
+if [[ "$DO_DEPLOY" -eq 1 ]]; then
+    echo "── deploying binaries ──────────────────────────────────"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line//[[:space:]]/}" ]] && continue
+        read -r rank mode rest <<< "$line"
+        [[ "$mode" != "deploy" ]] && continue
+
+        read -r local_path remote_path <<< "$rest"
+        target="${RANK_TARGET[$rank]:-}"
+        if [[ -z "$target" ]]; then
+            echo "warning: deploy line for rank $rank has no matching 'ssh' line - skipping" >&2
+            continue
+        fi
+        if [[ ! -f "$local_path" ]]; then
+            echo "error: deploy source '$local_path' for rank $rank not found" >&2
+            exit 1
+        fi
+
+        echo "  rank${rank}: ${local_path} -> ${target}:${remote_path}"
+        if ! scp -q "$local_path" "${target}:${remote_path}"; then
+            echo "error: scp to ${target} failed - is it reachable over the tailnet?" >&2
+            exit 1
+        fi
+    done < "$NODES_FILE"
+    echo "── deploy complete ─────────────────────────────────────"
+fi
+
 i=0
 while IFS= read -r line || [[ -n "$line" ]]; do
     # skip comments and blank lines
@@ -63,6 +126,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -z "${line//[[:space:]]/}" ]] && continue
 
     read -r rank mode rest <<< "$line"
+    [[ "$mode" == "deploy" ]] && continue  # handled in the deploy pass above, not a rank to launch
     color="${COLORS[$((i % ${#COLORS[@]}))]}"
     label="rank${rank}"
     prefix="$(printf '\033[1;%sm[%s]\033[0m' "$color" "$label")"
