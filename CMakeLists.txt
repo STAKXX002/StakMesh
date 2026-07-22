@@ -13,9 +13,22 @@ endif()
 # (different) syntax for all three, so these are skipped there rather than
 # passed through and rejected by cl.exe. If you're building with MSVC,
 # CMAKE_CXX_FLAGS_* fall back to CMake's own defaults (/O2 for Release etc.)
+#
+# -march=native is fine for a binary you're building and running on the same
+# machine, but it's poison for a binary you build once and ship to a
+# *different* machine (CI artifact, scp'd to another laptop) - it can bake in
+# instructions the target CPU doesn't have and crash with SIGILL instead of
+# a clean error. STAKMESH_NATIVE_ARCH gates it: leave ON for local dev builds,
+# turn OFF for anything meant to be distributed/run elsewhere.
+option(STAKMESH_NATIVE_ARCH "Build Release with -march=native (OFF for portable/distributable binaries)" ON)
+
 if(NOT MSVC)
     set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -Wall -Wextra -fsanitize=address,undefined")
-    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -march=native")
+    if(STAKMESH_NATIVE_ARCH)
+        set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -march=native")
+    else()
+        set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+    endif()
 endif()
 
 find_package(Threads REQUIRED)
