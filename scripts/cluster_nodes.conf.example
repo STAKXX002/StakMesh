@@ -48,7 +48,7 @@
 
 # ── Optional: skip building on the remote entirely ──
 #
-# Add one "deploy <rank> <local-binary> <remote-dest>" line per remote rank,
+# Add one "<rank> deploy <local-binary> <remote-dest>" line per remote rank,
 # then run `./launch_cluster.sh --deploy -- ...` instead of the plain form.
 # Before any rank starts, this scp's <local-binary> to <remote-dest> on that
 # rank's ssh target (host comes from the matching "ssh" line above, so you
@@ -56,4 +56,4 @@
 # or a binary pulled from a CI run (.github/workflows/build-binaries.yml) -
 # either way, no clone or compiler needed on the remote machine.
 #
-# deploy 1 ../build/mnist_distributed.exe C:\path\to\StakMesh\build\mnist_distributed.exe
+# 1 deploy ../build/mnist_distributed.exe C:\path\to\StakMesh\build\mnist_distributed.exe
