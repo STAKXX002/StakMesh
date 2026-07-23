@@ -263,7 +263,7 @@ one exists, then either copy the binary manually, or add a `deploy` line to
 `cluster_nodes.conf` and pass `--deploy`:
 
 ```
-deploy 1 ./mnist_distributed.exe C:\path\to\StakMesh\build\mnist_distributed.exe
+1 deploy ./mnist_distributed.exe C:\path\to\StakMesh\build\mnist_distributed.exe
 ```
 
 ```bash
