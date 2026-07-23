@@ -16,9 +16,9 @@
 #        ./scripts/launch_cluster.sh -- --epochs 5 --batch-size 512
 #
 # Adding/refreshing a remote node without a manual clone+build there:
-#   Add a line to cluster_nodes.conf:
+#   Add a line to cluster_nodes.conf, rank first like every other line:
 #
-#     deploy <rank> <local-binary-path> <remote-dest-path>
+#     <rank> deploy <local-binary-path> <remote-dest-path>
 #
 #   then pass --deploy as the first argument. Before any rank starts, this
 #   scp's <local-binary-path> (e.g. your own build/mnist_distributed, or a
@@ -93,17 +93,19 @@ done < "$NODES_FILE"
 
 if [[ "$DO_DEPLOY" -eq 1 ]]; then
     echo "── deploying binaries ──────────────────────────────────"
+    deployed_any=0
     while IFS= read -r line || [[ -n "$line" ]]; do
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
         [[ -z "${line//[[:space:]]/}" ]] && continue
         read -r rank mode rest <<< "$line"
         [[ "$mode" != "deploy" ]] && continue
+        deployed_any=1
 
         read -r local_path remote_path <<< "$rest"
         target="${RANK_TARGET[$rank]:-}"
         if [[ -z "$target" ]]; then
-            echo "warning: deploy line for rank $rank has no matching 'ssh' line - skipping" >&2
-            continue
+            echo "error: deploy line for rank $rank has no matching 'ssh' line for that rank" >&2
+            exit 1
         fi
         if [[ ! -f "$local_path" ]]; then
             echo "error: deploy source '$local_path' for rank $rank not found" >&2
@@ -116,6 +118,9 @@ if [[ "$DO_DEPLOY" -eq 1 ]]; then
             exit 1
         fi
     done < "$NODES_FILE"
+    if [[ "$deployed_any" -eq 0 ]]; then
+        echo "warning: --deploy was passed but no 'deploy' lines found in $NODES_FILE" >&2
+    fi
     echo "── deploy complete ─────────────────────────────────────"
 fi
 
