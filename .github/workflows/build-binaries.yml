@@ -13,7 +13,7 @@ on:
     branches: [main]
   workflow_dispatch: {}
   release:
-    types: [created]
+    types: [published]
 
 jobs:
   build-linux:
@@ -88,6 +88,8 @@ jobs:
     if: github.event_name == 'release'
     needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
