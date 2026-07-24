@@ -287,8 +287,15 @@ Every push to `main` builds portable Release binaries, with
 `.github/workflows/build-binaries.yml`:
 
 - `mnist_distributed-linux-x86_64`
-- `mnist_distributed-windows-x86_64`, built with MSYS2 and MinGW-w64, the
-  same toolchain the Windows cluster machine uses locally
+- `mnist_distributed-windows-x86_64`, built with MSYS2 (MINGW64 environment)
+
+The Windows cluster machine currently builds locally in UCRT64, not
+MINGW64. Both are valid MSYS2 environments and the resulting binaries
+should behave the same, but this means the CI binary is not literally the
+same toolchain output as the local build yet. Worth reconciling one way or
+the other (switch the CI workflow to UCRT64, or switch local dev to
+MINGW64) before relying on `--deploy`'d CI binaries as a drop-in
+replacement for a local rebuild.
 
 Download the artifacts from a workflow run, or from a tagged release once
 one exists, then either copy the binary manually, or add a `deploy` line to
