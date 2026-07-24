@@ -133,6 +133,21 @@ without any distributed aware code inside StakML itself.
 Requires CMake 3.28 or later, a C++17 compiler, and pthreads. StakML is
 pulled automatically through `FetchContent`.
 
+Always pass `-DCMAKE_BUILD_TYPE=Release` explicitly. If it's left out,
+`CMakeLists.txt` silently falls back to `Debug`, which builds with `-O0`
+and AddressSanitizer/UBSan attached. This is not a small slowdown: a
+`Release` epoch that normally takes ~25s took over 170s under an
+accidental `Debug` build, with no error or warning at any point to explain
+why. After configuring, it is worth confirming the build type actually
+took:
+
+```bash
+grep CMAKE_BUILD_TYPE build/CMakeCache.txt
+# should print: CMAKE_BUILD_TYPE:STRING=Release
+```
+
+### Linux / macOS
+
 ```bash
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
