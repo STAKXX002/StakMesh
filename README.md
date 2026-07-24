@@ -155,6 +155,23 @@ cmake --build . -j
 ctest --output-on-failure
 ```
 
+### Windows (MSYS2)
+
+Build from an MSYS2 shell matching whichever environment you installed
+(UCRT64 or MINGW64, both work, just be consistent about which one you use
+each time):
+
+```bash
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build . -j
+```
+
+`cmake ..` picks Ninja automatically if it is installed in that MSYS2
+environment; otherwise it falls back to Makefiles, either works the same
+way from here. `mnist_distributed.exe` and the rest of the test binaries
+land in `build/` exactly as on Linux.
+
 When developing StakML and StakMesh together, point at a local checkout
 instead of fetching from GitHub each time:
 
