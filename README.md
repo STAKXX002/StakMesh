@@ -262,9 +262,17 @@ instead of running the same command manually on every machine:
 
 ```bash
 cp scripts/cluster_nodes.conf.example scripts/cluster_nodes.conf
-# edit cluster_nodes.conf: local rank and ssh target/command for remote ranks
+# edit cluster_nodes.conf: point `topology` at your configs/*.txt file,
+# then add one line per rank (local build dir, or ssh user + build dir)
 ./scripts/launch_cluster.sh -- --epochs 5 --batch-size 512
 ```
+
+Hostnames are not duplicated into this file. Each rank's host is looked up
+by rank from the same `configs/*.txt` topology file the binary itself
+parses at runtime, so a machine's address only ever needs to be written in
+one place. `cluster_nodes.conf` only adds what that file can't know: which
+ranks are local vs reached over ssh, each rank's build directory, and its
+binary filename (`mnist_distributed` vs `mnist_distributed.exe`).
 
 The local rank runs directly, and remote ranks run over SSH. Output from
 every rank streams live into the same terminal, tagged with `[rank N]` and
@@ -277,7 +285,9 @@ This requires SSH access already working to any remote machine, meaning
 that `ssh user@host` should connect without a password prompt. Set up a key
 if it does not. See the comments in `cluster_nodes.conf.example` for
 Windows specific setup, covering OpenSSH Server and the syntax difference
-between cmd.exe and PowerShell.
+between cmd.exe and PowerShell (the generated command uses `&&` chaining,
+which matches cmd.exe; PowerShell needs `;` and only supports `&&` at all
+on PowerShell 7+).
 
 ### Adding a node without cloning or building there
 
@@ -302,15 +312,17 @@ one exists, then either copy the binary manually, or add a `deploy` line to
 `cluster_nodes.conf` and pass `--deploy`:
 
 ```
-1 deploy ./mnist_distributed.exe C:\path\to\StakMesh\build\mnist_distributed.exe
+1 deploy ./mnist_distributed.exe
 ```
 
 ```bash
 ./scripts/launch_cluster.sh --deploy -- --epochs 5 --batch-size 512
 ```
 
-This copies the binary to that rank's SSH target, using the host from its
-matching `ssh` line, before any rank starts. This means a checkout, a
+This copies the binary to that rank's ssh target, into the build
+directory and under the binary filename already given on that rank's own
+line above, so the destination is never written twice and can't drift out
+of sync with what actually gets launched. This means a checkout, a
 compiler, and a FetchContent pull are all unnecessary on the remote
 machine. Combining this with Tailscale MagicDNS names, used in place of raw
 IPs, in the cluster configuration file means that a change in a node's
