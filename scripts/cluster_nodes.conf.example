@@ -1,26 +1,34 @@
 # StakMesh cluster launcher config.
 #
 # Copy this file to cluster_nodes.conf (gitignored - it'll have your real
-# IPs/usernames/paths) and fill in your machines. One line per rank, two
-# possible formats:
+# paths/usernames) and fill in your machines.
 #
-#   <rank> local <command>
-#   <rank> ssh <user@host> <command>
+# Single source of truth for cluster membership: this file does NOT store
+# hostnames. Rank -> host is looked up from the SAME topology file the
+# mnist_distributed binary itself parses at runtime (configs/*.txt). This
+# file only adds what that config can't know: which ranks run locally vs
+# over ssh, each rank's remote build directory, and its binary filename
+# (mnist_distributed vs mnist_distributed.exe).
 #
-# `command` is exactly what you'd normally type on that machine by hand to
-# start training. Whatever extra args you pass to launch_cluster.sh after
-# `--` get appended to EVERY rank's command automatically, so you don't
-# have to hardcode --epochs/--batch-size here:
+# ── 1. Point at your topology file ──
+# Same relative path you'd pass to --config by hand, e.g.:
+topology ../configs/two_laptop_cluster.local.txt
+
+# ── 2. One line per rank ──
 #
-#   ./scripts/launch_cluster.sh -- --epochs 5 --batch-size 512
+#   <rank> local <build-dir> <binary>
+#   <rank> ssh   <user> <build-dir> <binary>
 #
-# ── Example setup (Linux control machine + Windows second rank) ──
+# <build-dir> uses whatever path style that machine actually uses (forward
+# slashes for Linux/macOS, backslashes for Windows) - this is also how the
+# script knows which style to launch the binary with (./binary vs binary,
+# posix `&&` chaining either way).
 #
-# Rank 0 (this machine, Linux) runs directly - no ssh needed since the
-# script itself runs here.
-#
-# Rank 1 (the Windows machine) runs over ssh. Two things to get right on the
-# Windows side before this works:
+# Rank 0 (this machine) runs directly, no ssh needed:
+0 local ~/StakMesh/build mnist_distributed
+
+# Rank 1 (a Windows machine, reached over ssh). Two things to get right on
+# the Windows side before this works:
 #
 #   1. OpenSSH Server must be enabled and running:
 #        Settings -> Apps -> Optional Features -> Add a feature -> OpenSSH Server
@@ -29,31 +37,24 @@
 #      Test it works BEFORE trying this script:
 #        ssh <user>@<windows-hostname>
 #
-#   2. Know which shell your ssh session drops you into - matters a lot,
-#      since cmd.exe and PowerShell have incompatible syntax (";" vs "&&"
-#      for chaining, and PowerShell needs ".\" before a bare .exe name -
-#      it never searches the current directory, unlike cmd.exe). Check:
+#   2. Know which shell your ssh session drops you into by default - cmd.exe
+#      accepts the "&&" chaining this script generates; PowerShell needs
+#      ";" instead. Check with:
 #        ssh <user>@<windows-hostname> "$PSVersionTable"
-#      Prints a version table -> PowerShell. Prints an error like
-#      "'$PSVersionTable' is not recognized" -> cmd.exe.
-#
-#      The example below assumes PowerShell (";" chaining, ".\" prefix) -
-#      the safer default, since it works whether you're on Windows
-#      PowerShell 5.1 or PowerShell 7+ ("&&" only works on 7+). If you
-#      confirmed cmd.exe above, switch to: cd <path> && mnist_distributed.exe ...
-
-0 local cd ~/StakMesh/build && ./mnist_distributed --config ../configs/two_laptop_cluster.local.txt
-
-1 ssh <user>@<windows-hostname> cd C:\path\to\StakMesh\build ; .\mnist_distributed.exe --config ../configs/two_laptop_cluster.local.txt
+#      Prints a version table -> PowerShell (this script's generated "&&"
+#      command will fail there on PowerShell 5.1; PowerShell 7+ does
+#      support "&&"). Prints an error -> cmd.exe, which is what this
+#      script assumes.
+1 ssh <user> C:\path\to\StakMesh\build mnist_distributed.exe
 
 # ── Optional: skip building on the remote entirely ──
 #
-# Add one "<rank> deploy <local-binary> <remote-dest>" line per remote rank,
-# then run `./launch_cluster.sh --deploy -- ...` instead of the plain form.
-# Before any rank starts, this scp's <local-binary> to <remote-dest> on that
-# rank's ssh target (host comes from the matching "ssh" line above, so you
-# don't repeat it here). <local-binary> can be your own build/mnist_distributed,
-# or a binary pulled from a CI run (.github/workflows/build-binaries.yml) -
-# either way, no clone or compiler needed on the remote machine.
+# Add "<rank> deploy <local-binary-path>" for any ssh rank, then run
+# `./launch_cluster.sh --deploy -- ...` instead of the plain form. Before
+# any rank starts, this scp's <local-binary-path> (e.g. your own
+# build/mnist_distributed, or a binary downloaded from a CI run - see
+# .github/workflows/build-binaries.yml) to that rank's remote directory and
+# binary name from its line above - the destination is never repeated by
+# hand, so it can't drift out of sync with what the ssh line actually runs.
 #
-# 1 deploy ../build/mnist_distributed.exe C:\path\to\StakMesh\build\mnist_distributed.exe
+# 1 deploy ../build/mnist_distributed.exe
