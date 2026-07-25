@@ -29,7 +29,14 @@ fi
 # it (you don't deploy to yourself, rank 0 is already local).
 SELF_IP="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
 
-[[ -f "$NODES_FILE" ]] && CONFIGURED="$(cat "$NODES_FILE")" || CONFIGURED=""
+[[ -f "$NODES_FILE" ]] && TOPOLOGY_REL="$(awk '/^topology/{print $2; exit}' "$NODES_FILE")" || TOPOLOGY_REL=""
+if [[ -n "$TOPOLOGY_REL" ]]; then
+    REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+    TOPOLOGY_LOCAL="$REPO_ROOT/configs/$(basename "$TOPOLOGY_REL")"
+    [[ -f "$TOPOLOGY_LOCAL" ]] && CONFIGURED="$(cat "$TOPOLOGY_LOCAL")" || CONFIGURED=""
+else
+    CONFIGURED=""
+fi
 
 online=()
 offline=()
@@ -59,7 +66,7 @@ else
     for entry in "${online[@]}"; do
         IFS=$'\t' read -r host os ip <<< "$entry"
         if [[ "$CONFIGURED" == *"$host"* ]]; then
-            tag="already in cluster_nodes.conf"
+            tag="already in topology config"
         else
             tag="NOT yet configured"
         fi
