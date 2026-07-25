@@ -1,42 +1,44 @@
 #!/usr/bin/env bash
 #
-# StakMesh cluster launcher.
+# Launches every rank of a StakMesh cluster from a single terminal on one
+# machine: the local rank runs directly, remote ranks run over ssh, and
+# every rank's output streams live into this terminal, tagged and color
+# coded per rank.
 #
-# Starts every rank in the cluster from ONE terminal on this (the control)
-# machine: the local rank runs directly, remote ranks are started over SSH.
-# All output is tagged with "[rank N]" and color-coded per rank, streamed
-# live and interleaved. Ctrl+C stops every rank, local and remote.
+# Single source of truth for cluster membership: this file does NOT store
+# hostnames. Rank -> host comes from the same topology file the actual
+# mnist_distributed binary parses (configs/*.txt, see cluster_config.hpp),
+# looked up by rank. This file only adds what the binary's config can't
+# know: which ranks are local vs ssh, the remote build directory, and the
+# binary filename per rank (mnist_distributed vs mnist_distributed.exe).
 #
 # Setup:
 #   1. Copy scripts/cluster_nodes.conf.example to scripts/cluster_nodes.conf
-#   2. Edit it to describe your actual machines (see comments in that file)
+#   2. Edit it: point `topology` at your real configs/*.txt file, and add
+#      one line per rank (see comments in that file for the exact format)
 #   3. Run this script from anywhere; extra args after `--` are appended to
 #      every rank's command, e.g.:
 #
 #        ./scripts/launch_cluster.sh -- --epochs 5 --batch-size 512
 #
 # Adding/refreshing a remote node without a manual clone+build there:
-#   Add a line to cluster_nodes.conf, rank first like every other line:
-#
-#     <rank> deploy <local-binary-path> <remote-dest-path>
-#
-#   then pass --deploy as the first argument. Before any rank starts, this
-#   scp's <local-binary-path> (e.g. your own build/mnist_distributed, or a
-#   binary downloaded from a CI run - see .github/workflows/build-binaries.yml)
-#   to <remote-dest-path> on that rank's ssh target. Build once on whichever
-#   machine, deploy everywhere else on the tailnet:
+#   Add a line "<rank> deploy <local-binary-path>", then pass --deploy as
+#   the first argument. Before any rank starts, this scp's <local-binary-path>
+#   (e.g. your own build/mnist_distributed, or a binary downloaded from a CI
+#   run - see .github/workflows/build-binaries.yml) to that rank's remote
+#   directory (from its own line above, so the destination is never
+#   repeated by hand) on that rank's ssh target:
 #
 #     ./scripts/launch_cluster.sh --deploy -- --epochs 5
 #
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 NODES_FILE="$SCRIPT_DIR/cluster_nodes.conf"
 
 if [[ ! -f "$NODES_FILE" ]]; then
-    echo "error: $NODES_FILE not found." >&2
-    echo "  Copy scripts/cluster_nodes.conf.example to scripts/cluster_nodes.conf" >&2
-    echo "  and fill in your actual machines first." >&2
+    echo "error: $NODES_FILE not found. Copy cluster_nodes.conf.example and fill it in." >&2
     exit 1
 fi
 
@@ -55,42 +57,86 @@ if [[ "${1:-}" == "--" ]]; then
     EXTRA_ARGS="$*"
 fi
 
-COLORS=(31 32 33 34 35 36 91 92)  # red green yellow blue magenta cyan + bright variants, cycles if >8 ranks
-PIDS=()
-LABELS=()
+COLORS=($'\033[36m' $'\033[35m' $'\033[33m' $'\033[32m' $'\033[34m' $'\033[31m')
+RESET=$'\033[0m'
 
-CLEANUP_DONE=0
+PIDS=()
 cleanup() {
-    [[ "$CLEANUP_DONE" -eq 1 ]] && return
-    CLEANUP_DONE=1
-    echo
+    echo ""
     echo "── stopping all ranks ──────────────────────────────────"
     for pid in "${PIDS[@]}"; do
-        kill -TERM "$pid" 2>/dev/null
+        kill "$pid" 2>/dev/null
     done
     wait 2>/dev/null
     echo "── all ranks stopped ───────────────────────────────────"
 }
-trap cleanup INT TERM EXIT
+trap cleanup EXIT INT TERM
 
 echo "══════════════════════════════════════════════════════════"
 echo "  StakMesh cluster launcher"
 echo "══════════════════════════════════════════════════════════"
 
-# First pass: rank -> ssh target, so "deploy" lines (which only name a rank,
-# not a host - the host already lives on that rank's ssh line) know where to
-# scp to. Only ssh-mode ranks need this; a "local" rank deploys nowhere.
-declare -A RANK_TARGET
+# ── Pass 1: read the "topology" directive and every rank's base line ───────
+TOPOLOGY_REL=""       # e.g. "../configs/two_laptop_cluster.local.txt" - passed
+                       # verbatim as --config on every rank's command
+declare -A RANK_MODE   # rank -> local | ssh
+declare -A RANK_USER   # rank -> ssh user (ssh ranks only)
+declare -A RANK_DIR    # rank -> remote/local build directory
+declare -A RANK_BIN    # rank -> binary filename
+
 while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
     [[ -z "${line//[[:space:]]/}" ]] && continue
-    read -r rank mode rest <<< "$line"
-    if [[ "$mode" == "ssh" ]]; then
-        read -r target _ <<< "$rest"
-        RANK_TARGET["$rank"]="$target"
+
+    if [[ "$line" == topology* ]]; then
+        read -r _ TOPOLOGY_REL <<< "$line"
+        continue
     fi
+
+    read -r rank mode rest <<< "$line"
+    case "$mode" in
+        local)
+            read -r dir bin <<< "$rest"
+            RANK_MODE["$rank"]="local"
+            RANK_DIR["$rank"]="$dir"
+            RANK_BIN["$rank"]="$bin"
+            ;;
+        ssh)
+            read -r user dir bin <<< "$rest"
+            RANK_MODE["$rank"]="ssh"
+            RANK_USER["$rank"]="$user"
+            RANK_DIR["$rank"]="$dir"
+            RANK_BIN["$rank"]="$bin"
+            ;;
+        deploy) : ;;  # handled in pass 2, below
+        *)
+            echo "warning: unknown mode '$mode' on line: $line (expected 'local', 'ssh', or 'deploy')" >&2
+            ;;
+    esac
 done < "$NODES_FILE"
 
+if [[ -z "$TOPOLOGY_REL" ]]; then
+    echo "error: no 'topology <relative-path>' line found in $NODES_FILE" >&2
+    exit 1
+fi
+
+# Resolve the topology file locally (relative to the repo root) purely to
+# look up rank -> host below. TOPOLOGY_REL itself, unresolved, is what gets
+# passed as --config on every rank's command, since it's relative to each
+# rank's own build directory, not to this script.
+TOPOLOGY_LOCAL="$REPO_ROOT/configs/$(basename "$TOPOLOGY_REL")"
+if [[ ! -f "$TOPOLOGY_LOCAL" ]]; then
+    echo "error: topology file not found at $TOPOLOGY_LOCAL" >&2
+    exit 1
+fi
+
+declare -A RANK_HOST
+while read -r trank thost tport; do
+    [[ -z "$trank" ]] && continue
+    RANK_HOST["$trank"]="$thost"
+done < <(sed 's/#.*//' "$TOPOLOGY_LOCAL" | awk 'NF>=3 {print $1, $2, $3}')
+
+# ── Optional deploy pass: scp each rank's binary to its own remote dir ─────
 if [[ "$DO_DEPLOY" -eq 1 ]]; then
     echo "── deploying binaries ──────────────────────────────────"
     deployed_any=0
@@ -101,16 +147,30 @@ if [[ "$DO_DEPLOY" -eq 1 ]]; then
         [[ "$mode" != "deploy" ]] && continue
         deployed_any=1
 
-        read -r local_path remote_path <<< "$rest"
-        target="${RANK_TARGET[$rank]:-}"
-        if [[ -z "$target" ]]; then
+        local_path="$rest"
+        rank_mode="${RANK_MODE[$rank]:-}"
+        if [[ "$rank_mode" != "ssh" ]]; then
             echo "error: deploy line for rank $rank has no matching 'ssh' line for that rank" >&2
+            exit 1
+        fi
+        host="${RANK_HOST[$rank]:-}"
+        if [[ -z "$host" ]]; then
+            echo "error: rank $rank has no host entry in $TOPOLOGY_LOCAL" >&2
             exit 1
         fi
         if [[ ! -f "$local_path" ]]; then
             echo "error: deploy source '$local_path' for rank $rank not found" >&2
             exit 1
         fi
+
+        dir="${RANK_DIR[$rank]}"
+        bin="${RANK_BIN[$rank]}"
+        if [[ "$dir" == *'\'* ]]; then
+            remote_path="${dir}\\${bin}"   # windows-style remote dir
+        else
+            remote_path="${dir}/${bin}"    # posix-style remote dir
+        fi
+        target="${RANK_USER[$rank]}@${host}"
 
         echo "  rank${rank}: ${local_path} -> ${target}:${remote_path}"
         if ! scp -q "$local_path" "${target}:${remote_path}"; then
@@ -124,51 +184,40 @@ if [[ "$DO_DEPLOY" -eq 1 ]]; then
     echo "── deploy complete ─────────────────────────────────────"
 fi
 
+# ── Pass 2: launch every rank ───────────────────────────────────────────────
 i=0
-while IFS= read -r line || [[ -n "$line" ]]; do
-    # skip comments and blank lines
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    [[ -z "${line//[[:space:]]/}" ]] && continue
-
-    read -r rank mode rest <<< "$line"
-    [[ "$mode" == "deploy" ]] && continue  # handled in the deploy pass above, not a rank to launch
+for rank in $(printf '%s\n' "${!RANK_MODE[@]}" | sort -n); do
+    mode="${RANK_MODE[$rank]}"
+    dir="${RANK_DIR[$rank]}"
+    bin="${RANK_BIN[$rank]}"
     color="${COLORS[$((i % ${#COLORS[@]}))]}"
-    label="rank${rank}"
-    prefix="$(printf '\033[1;%sm[%s]\033[0m' "$color" "$label")"
     i=$((i + 1))
 
-    case "$mode" in
-        local)
-            cmd="$rest $EXTRA_ARGS"
-            printf '%s\n' "${prefix} starting locally:"
-            printf '%s\n' "${prefix}   $cmd"
-            # NOTE: process substitution (not a `| sed` pipeline) so that $!
-            # below is the PID of the actual command, not the sed formatter.
-            # A `| pipe` backgrounds sed as the last stage and $! grabs
-            # THAT pid - killing it does nothing to the real process.
-            bash -lc "$cmd" > >(sed -u "s/^/${prefix} /") 2>&1 &
-            PIDS+=("$!")
-            ;;
-        ssh)
-            read -r target sshcmd <<< "$rest"
-            cmd="$sshcmd $EXTRA_ARGS"
-            printf '%s\n' "${prefix} starting on ${target} via ssh:"
-            printf '%s\n' "${prefix}   $cmd"
-            # -t allocates a pseudo-tty so the remote process gets SIGHUP
-            # (and dies) when the ssh connection is closed on Ctrl+C.
-            ssh -t "$target" "$cmd" > >(sed -u "s/^/${prefix} /") 2>&1 &
-            PIDS+=("$!")
-            ;;
-        *)
-            echo "warning: unknown mode '$mode' on line: $line (expected 'local' or 'ssh')" >&2
-            ;;
-    esac
-done < "$NODES_FILE"
+    if [[ "$dir" == *'\'* ]]; then
+        bin_invoke="$bin"                     # windows: no ./ prefix needed
+    else
+        bin_invoke="./$bin"                   # posix
+    fi
+    cmd="cd ${dir} && ${bin_invoke} --config ${TOPOLOGY_REL} ${EXTRA_ARGS}"
 
-if [[ "${#PIDS[@]}" -eq 0 ]]; then
-    echo "error: no ranks started - check $NODES_FILE" >&2
-    exit 1
-fi
+    if [[ "$mode" == "local" ]]; then
+        echo "[rank${rank}] starting locally:"
+        echo "[rank${rank}]   ${cmd}"
+        ( eval "$cmd" 2>&1 | sed -u "s/^/${color}[rank${rank}]${RESET} /" ) &
+        PIDS+=($!)
+    else
+        host="${RANK_HOST[$rank]:-}"
+        if [[ -z "$host" ]]; then
+            echo "error: rank $rank has no host entry in $TOPOLOGY_LOCAL" >&2
+            exit 1
+        fi
+        target="${RANK_USER[$rank]}@${host}"
+        echo "[rank${rank}] starting on ${target} via ssh:"
+        echo "[rank${rank}]   ${cmd}"
+        ( ssh "$target" "$cmd" 2>&1 | sed -u "s/^/${color}[rank${rank}]${RESET} /" ) &
+        PIDS+=($!)
+    fi
+done
 
 echo "── ${#PIDS[@]} rank(s) running, Ctrl+C to stop all ────────"
 wait
