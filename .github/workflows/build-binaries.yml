@@ -23,7 +23,7 @@ jobs:
 
       - name: Configure
         run: >
-          cmake -S . -B build
+          cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DSTAKMESH_NATIVE_ARCH=OFF
 
