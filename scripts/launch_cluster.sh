@@ -60,6 +60,14 @@ fi
 COLORS=($'\033[36m' $'\033[35m' $'\033[33m' $'\033[32m' $'\033[34m' $'\033[31m')
 RESET=$'\033[0m'
 
+# Every rank's raw (uncolored) output is also teed to its own log file, in
+# addition to the live tagged/colored terminal view above - so a crash or
+# hang on a remote rank leaves a trail behind even if you weren't watching
+# the terminal at the time. Overwritten each run; grab a copy first if you
+# want to keep it.
+LOG_DIR="$REPO_ROOT/logs"
+mkdir -p "$LOG_DIR"
+
 PIDS=()
 cleanup() {
     echo ""
@@ -200,10 +208,12 @@ for rank in $(printf '%s\n' "${!RANK_MODE[@]}" | sort -n); do
     fi
     cmd="cd ${dir} && ${bin_invoke} --config ${TOPOLOGY_REL} ${EXTRA_ARGS}"
 
+    log_file="$LOG_DIR/rank${rank}.log"
+
     if [[ "$mode" == "local" ]]; then
         echo "[rank${rank}] starting locally:"
         echo "[rank${rank}]   ${cmd}"
-        ( eval "$cmd" 2>&1 | sed -u "s/^/${color}[rank${rank}]${RESET} /" ) &
+        ( eval "$cmd" 2>&1 | tee "$log_file" | sed -u "s/^/${color}[rank${rank}]${RESET} /" ) &
         PIDS+=($!)
     else
         host="${RANK_HOST[$rank]:-}"
@@ -214,10 +224,11 @@ for rank in $(printf '%s\n' "${!RANK_MODE[@]}" | sort -n); do
         target="${RANK_USER[$rank]}@${host}"
         echo "[rank${rank}] starting on ${target} via ssh:"
         echo "[rank${rank}]   ${cmd}"
-        ( ssh "$target" "$cmd" 2>&1 | sed -u "s/^/${color}[rank${rank}]${RESET} /" ) &
+        ( ssh "$target" "$cmd" 2>&1 | tee "$log_file" | sed -u "s/^/${color}[rank${rank}]${RESET} /" ) &
         PIDS+=($!)
     fi
 done
 
+echo "── logs: ${LOG_DIR}/rank<N>.log (raw, uncolored) ────────"
 echo "── ${#PIDS[@]} rank(s) running, Ctrl+C to stop all ────────"
 wait
