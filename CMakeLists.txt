@@ -64,7 +64,8 @@ if(STAKMESH_BUILD_DIST)
         FetchContent_Declare(
             stakml
             GIT_REPOSITORY https://github.com/STAKXX002/StakML.git
-            GIT_TAG main
+            GIT_TAG 8736bec  # last commit before Vulkan backend work began;
+                             # StakML has no tags yet, see README for notes
             EXCLUDE_FROM_ALL
         )
     endif()
