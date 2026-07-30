@@ -8,3 +8,4 @@ compile_commands.json
 configs/*.local.txt
 scripts/cluster_nodes.conf
 Testing/Temporary/
+logs/
