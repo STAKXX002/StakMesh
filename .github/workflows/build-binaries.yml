@@ -49,17 +49,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # MSYS2/MinGW-w64, not MSVC - matches the toolchain the Windows
+      # MSYS2/MinGW-w64 UCRT64, not MSVC - matches the toolchain the Windows
       # cluster machine actually builds with locally (see README/CMakeLists
       # comments on MinGW vs MSVC flag differences).
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-ninja
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-ninja
 
       - name: Configure
         run: >
