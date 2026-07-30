@@ -273,6 +273,16 @@ int main(int argc, char** argv) {
     const size_t train_batches = local_samples / args.batch_size;
     const size_t test_batches = test_data.num_samples / args.batch_size;
 
+    // Unconditional (every rank, not just root) - the first epoch's own
+    // summary line doesn't print until the WHOLE epoch finishes, so without
+    // this, a rank that's alive but slow (or genuinely stuck) on its very
+    // first batch is indistinguishable from one that never got this far -
+    // both produce zero output. This line at least proves setup completed:
+    // ring handshake, dataset load, and (if applicable) weight broadcast.
+    std::cout << "[rank " << args.rank << "] setup complete, starting training: "
+               << train_batches << " train batches/epoch, " << test_batches
+               << " test batches, batch_size=" << args.batch_size << "\n";
+
     for (size_t epoch = start_epoch; epoch < args.epochs; ++epoch) {
         auto start_time = std::chrono::high_resolution_clock::now();
 
