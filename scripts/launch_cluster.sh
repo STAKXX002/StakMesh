@@ -69,7 +69,12 @@ LOG_DIR="$REPO_ROOT/logs"
 mkdir -p "$LOG_DIR"
 
 PIDS=()
-cleanup() {
+RANKS_ORDER=()   # parallel array: RANKS_ORDER[i] is the rank that owns PIDS[i]
+
+# Ctrl+C (or a TERM) is the only case that should print a "stopping" message -
+# a normal, successful finish falls through to the run summary below instead
+# and shouldn't look like an abort.
+handle_signal() {
     echo ""
     echo "── stopping all ranks ──────────────────────────────────"
     for pid in "${PIDS[@]}"; do
@@ -77,8 +82,9 @@ cleanup() {
     done
     wait 2>/dev/null
     echo "── all ranks stopped ───────────────────────────────────"
+    exit 130
 }
-trap cleanup EXIT INT TERM
+trap handle_signal INT TERM
 
 echo "══════════════════════════════════════════════════════════"
 echo "  StakMesh cluster launcher"
@@ -215,6 +221,7 @@ for rank in $(printf '%s\n' "${!RANK_MODE[@]}" | sort -n); do
         echo "[rank${rank}]   ${cmd}"
         ( eval "$cmd" 2>&1 | tee "$log_file" | sed -u "s/^/${color}[rank${rank}]${RESET} /" ) &
         PIDS+=($!)
+        RANKS_ORDER+=("$rank")
     else
         host="${RANK_HOST[$rank]:-}"
         if [[ -z "$host" ]]; then
@@ -226,9 +233,33 @@ for rank in $(printf '%s\n' "${!RANK_MODE[@]}" | sort -n); do
         echo "[rank${rank}]   ${cmd}"
         ( ssh "$target" "$cmd" 2>&1 | tee "$log_file" | sed -u "s/^/${color}[rank${rank}]${RESET} /" ) &
         PIDS+=($!)
+        RANKS_ORDER+=("$rank")
     fi
 done
 
 echo "── logs: ${LOG_DIR}/rank<N>.log (raw, uncolored) ────────"
 echo "── ${#PIDS[@]} rank(s) running, Ctrl+C to stop all ────────"
-wait
+
+STATUS=()
+for idx in "${!PIDS[@]}"; do
+    if wait "${PIDS[$idx]}"; then
+        STATUS[$idx]=0
+    else
+        STATUS[$idx]=$?
+    fi
+done
+
+echo ""
+echo "── run summary ──────────────────────────────────────────"
+overall=0
+for idx in "${!PIDS[@]}"; do
+    rank="${RANKS_ORDER[$idx]}"
+    if [[ "${STATUS[$idx]}" -eq 0 ]]; then
+        echo "  rank${rank}: ok"
+    else
+        echo "  rank${rank}: FAILED (exit ${STATUS[$idx]}) - see logs/rank${rank}.log"
+        overall=1
+    fi
+done
+echo "──────────────────────────────────────────────────────────"
+exit "$overall"
