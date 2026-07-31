@@ -59,6 +59,20 @@ fi
 
 COLORS=($'\033[36m' $'\033[35m' $'\033[33m' $'\033[32m' $'\033[34m' $'\033[31m')
 RESET=$'\033[0m'
+BOLD=$'\033[1m'
+GREEN=$'\033[32m'
+RED=$'\033[31m'
+
+BOX_WIDTH=60
+
+# Prints "── label ──────..." padded to a consistent total width, so every
+# section divider lines up the same regardless of label length.
+section() {
+    local label=" $1 "
+    local dashes=$(( BOX_WIDTH - ${#label} - 2 ))
+    (( dashes < 0 )) && dashes=0
+    printf -- "──%s%s\n" "$label" "$(printf -- '─%.0s' $(seq 1 "$dashes"))"
+}
 
 # Every rank's raw (uncolored) output is also teed to its own log file, in
 # addition to the live tagged/colored terminal view above - so a crash or
@@ -76,19 +90,19 @@ RANKS_ORDER=()   # parallel array: RANKS_ORDER[i] is the rank that owns PIDS[i]
 # and shouldn't look like an abort.
 handle_signal() {
     echo ""
-    echo "── stopping all ranks ──────────────────────────────────"
+    section "stopping all ranks"
     for pid in "${PIDS[@]}"; do
         kill "$pid" 2>/dev/null
     done
     wait 2>/dev/null
-    echo "── all ranks stopped ───────────────────────────────────"
+    section "all ranks stopped"
     exit 130
 }
 trap handle_signal INT TERM
 
-echo "══════════════════════════════════════════════════════════"
-echo "  StakMesh cluster launcher"
-echo "══════════════════════════════════════════════════════════"
+echo "$(printf -- '═%.0s' $(seq 1 $BOX_WIDTH))"
+echo "  ${BOLD}StakMesh cluster launcher${RESET}"
+echo "$(printf -- '═%.0s' $(seq 1 $BOX_WIDTH))"
 
 # ── Pass 1: read the "topology" directive and every rank's base line ───────
 TOPOLOGY_REL=""       # e.g. "../configs/two_laptop_cluster.local.txt" - passed
@@ -152,7 +166,7 @@ done < <(sed 's/#.*//' "$TOPOLOGY_LOCAL" | awk 'NF>=3 {print $1, $2, $3}')
 
 # ── Optional deploy pass: scp each rank's binary to its own remote dir ─────
 if [[ "$DO_DEPLOY" -eq 1 ]]; then
-    echo "── deploying binaries ──────────────────────────────────"
+    section "deploying"
     deployed_any=0
     while IFS= read -r line || [[ -n "$line" ]]; do
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
@@ -186,7 +200,7 @@ if [[ "$DO_DEPLOY" -eq 1 ]]; then
         fi
         target="${RANK_USER[$rank]}@${host}"
 
-        echo "  rank${rank}: ${local_path} -> ${target}:${remote_path}"
+        echo "  rank${rank}  $(basename "$local_path") → ${target}"
         if ! scp -q "$local_path" "${target}:${remote_path}"; then
             echo "error: scp to ${target} failed - is it reachable over the tailnet?" >&2
             exit 1
@@ -195,10 +209,10 @@ if [[ "$DO_DEPLOY" -eq 1 ]]; then
     if [[ "$deployed_any" -eq 0 ]]; then
         echo "warning: --deploy was passed but no 'deploy' lines found in $NODES_FILE" >&2
     fi
-    echo "── deploy complete ─────────────────────────────────────"
 fi
 
 # ── Pass 2: launch every rank ───────────────────────────────────────────────
+section "launching ${#RANK_MODE[@]} rank(s)"
 i=0
 for rank in $(printf '%s\n' "${!RANK_MODE[@]}" | sort -n); do
     mode="${RANK_MODE[$rank]}"
@@ -217,8 +231,7 @@ for rank in $(printf '%s\n' "${!RANK_MODE[@]}" | sort -n); do
     log_file="$LOG_DIR/rank${rank}.log"
 
     if [[ "$mode" == "local" ]]; then
-        echo "[rank${rank}] starting locally:"
-        echo "[rank${rank}]   ${cmd}"
+        echo "  rank${rank}  local     ${cmd}"
         ( eval "$cmd" 2>&1 | tee "$log_file" | sed -u "s/^/${color}[rank${rank}]${RESET} /" ) &
         PIDS+=($!)
         RANKS_ORDER+=("$rank")
@@ -229,16 +242,16 @@ for rank in $(printf '%s\n' "${!RANK_MODE[@]}" | sort -n); do
             exit 1
         fi
         target="${RANK_USER[$rank]}@${host}"
-        echo "[rank${rank}] starting on ${target} via ssh:"
-        echo "[rank${rank}]   ${cmd}"
+        echo "  rank${rank}  ssh:${target}   ${cmd}"
         ( ssh "$target" "$cmd" 2>&1 | tee "$log_file" | sed -u "s/^/${color}[rank${rank}]${RESET} /" ) &
         PIDS+=($!)
         RANKS_ORDER+=("$rank")
     fi
 done
 
-echo "── logs: ${LOG_DIR}/rank<N>.log (raw, uncolored) ────────"
-echo "── ${#PIDS[@]} rank(s) running, Ctrl+C to stop all ────────"
+section "running"
+echo "  logs → ${LOG_DIR}/rank<N>.log   (Ctrl+C to stop all ranks)"
+echo
 
 STATUS=()
 for idx in "${!PIDS[@]}"; do
@@ -250,16 +263,16 @@ for idx in "${!PIDS[@]}"; do
 done
 
 echo ""
-echo "── run summary ──────────────────────────────────────────"
+section "run summary"
 overall=0
 for idx in "${!PIDS[@]}"; do
     rank="${RANKS_ORDER[$idx]}"
     if [[ "${STATUS[$idx]}" -eq 0 ]]; then
-        echo "  rank${rank}: ok"
+        echo "  ${GREEN}✓${RESET} rank${rank}"
     else
-        echo "  rank${rank}: FAILED (exit ${STATUS[$idx]}) - see logs/rank${rank}.log"
+        echo "  ${RED}✗${RESET} rank${rank}  (exit ${STATUS[$idx]}) → logs/rank${rank}.log"
         overall=1
     fi
 done
-echo "──────────────────────────────────────────────────────────"
+echo "$(printf -- '─%.0s' $(seq 1 $BOX_WIDTH))"
 exit "$overall"
