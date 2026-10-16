@@ -25,6 +25,8 @@
 #include <string>
 #include <thread>
 #include <stdexcept>
+#include <memory>
+#include <string>
 
 #include "socket.hpp"
 
@@ -50,7 +52,8 @@ struct RingLinks {
 // CONCEPT note in socket.hpp) - 0 disables it (blocks forever, matching
 // pre-Phase-4b behavior).
 inline RingLinks establish_ring(int my_rank, const std::vector<PeerAddr>& peers,
-                                 int io_timeout_ms = 30000, int connect_timeout_ms = 10000) {
+                                 int io_timeout_ms = 30000, int connect_timeout_ms = 10000,
+                                 int accept_timeout_ms = 60000) {
     const int world_size = static_cast<int>(peers.size());
     if (world_size < 2) {
         throw std::invalid_argument("establish_ring: need at least 2 ranks");
@@ -79,18 +82,30 @@ inline RingLinks establish_ring(int my_rank, const std::vector<PeerAddr>& peers,
     //      joinable - a joinable std::thread's destructor ALSO calls
     //      std::terminate(), unconditionally, even during unwinding. We
     //      can't just add a `listener.join()` on this path either: the
-    //      listener may be blocked in accept() with no timeout (only
-    //      established connections get io_timeout_ms - a socket that's
-    //      still just listening has no peer yet to time out on), so
-    //      joining could hang exactly as badly as the bug being fixed.
+    //      listener may still be waiting in accept() (up to
+    //      accept_timeout_ms), so joining would stall the error report.
     //      detach() is correct here: this is a failure path, not the hot
-    //      path, and the thread dies with the process either way.
-    TcpSocket recv_sock;
-    std::thread listener([&]() {
+    //      path.
+    //
+    //   3. A detached thread outlives this function, so it must NOT touch
+    //      this function's locals: the old version captured `recv_sock` by
+    //      reference, and on the connect-failure path the thread could later
+    //      write into a stack slot that no longer existed. The thread owns a
+    //      shared_ptr to its own state instead, so it stays valid however
+    //      long the thread lives. accept_timeout_ms also guarantees the
+    //      thread ends on its own rather than waiting in accept() forever.
+    struct ListenState {
+        TcpSocket sock;
+        std::string error;
+    };
+    auto listen_state = std::make_shared<ListenState>();
+    std::thread listener([listen_state, my_port, io_timeout_ms, accept_timeout_ms]() {
         try {
-            recv_sock = TcpSocket::listen_one(my_port, io_timeout_ms);
+            listen_state->sock = TcpSocket::listen_one(my_port, io_timeout_ms, accept_timeout_ms);
+        } catch (const std::exception& e) {
+            listen_state->error = e.what();   // surfaced below via the thrown SocketError
         } catch (...) {
-            // swallowed deliberately - checked via recv_sock.valid() below
+            listen_state->error = "unknown error";
         }
     });
 
@@ -107,11 +122,13 @@ inline RingLinks establish_ring(int my_rank, const std::vector<PeerAddr>& peers,
     }
 
     listener.join();
-    if (!recv_sock.valid()) {
-        throw SocketError("establish_ring: failed to accept predecessor connection");
+    if (!listen_state->sock.valid()) {
+        throw SocketError("establish_ring: failed to accept predecessor connection (rank " +
+                           std::to_string((my_rank - 1 + world_size) % world_size) + "): " +
+                           listen_state->error);
     }
 
-    RingLinks links{my_rank, world_size, std::move(send_sock), std::move(recv_sock)};
+    RingLinks links{my_rank, world_size, std::move(send_sock), std::move(listen_state->sock)};
     return links;
 }
 

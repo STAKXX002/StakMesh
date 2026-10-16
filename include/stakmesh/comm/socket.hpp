@@ -156,6 +156,27 @@ constexpr int kSendFlags = MSG_NOSIGNAL;
 constexpr int kSendFlags = 0;
 #endif
 
+// Waits until `h` is readable (e.g. a pending connection on a listening
+// socket) or `timeout_ms` elapses. Returns true if readable, false on timeout.
+inline bool wait_readable(SocketHandle h, int timeout_ms) {
+#ifdef _WIN32
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(h, &rfds);
+    timeval tv{};
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    return ::select(0, &rfds, nullptr, nullptr, &tv) > 0;
+#else
+    pollfd pfd{};
+    pfd.fd = h;
+    pfd.events = POLLIN;
+    int rc;
+    do { rc = ::poll(&pfd, 1, timeout_ms); } while (rc < 0 && errno == EINTR);
+    return rc > 0;
+#endif
+}
+
 // One connect() attempt bounded by `timeout_ms`. A plain blocking connect()
 // to a host that silently DROPS packets (a firewall rule - e.g. Windows
 // treating a network as "Public" - or a peer that is simply off) ignores our
@@ -294,7 +315,10 @@ public:
 
     // ── Server side: bind to `port` on all interfaces, listen, and block
     //    until exactly one peer connects. Returns the accepted connection. ──
-    static TcpSocket listen_one(int port, int io_timeout_ms = 30000) {
+    //    `accept_timeout_ms` bounds the wait for that peer (0 = wait forever,
+    //    the original behavior): a rank whose predecessor never shows up
+    //    should fail with an error, not sit in accept() indefinitely. ──
+    static TcpSocket listen_one(int port, int io_timeout_ms = 30000, int accept_timeout_ms = 0) {
         ensure_winsock_initialized();
 
         SocketHandle listen_h = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -325,6 +349,13 @@ public:
         if (::listen(listen_h, 1) != 0) {
             close_handle(listen_h);
             throw SocketError("listen_one: listen() failed - " + last_socket_error());
+        }
+
+        if (accept_timeout_ms > 0 && !wait_readable(listen_h, accept_timeout_ms)) {
+            close_handle(listen_h);
+            throw SocketError("listen_one: no peer connected to port " + std::to_string(port) +
+                               " within " + std::to_string(accept_timeout_ms) +
+                               " ms (is the previous rank running? firewall blocking inbound?)");
         }
 
         SocketHandle conn_h = ::accept(listen_h, nullptr, nullptr);
