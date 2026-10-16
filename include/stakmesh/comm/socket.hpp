@@ -65,6 +65,7 @@
 #include <thread>
 #include <chrono>
 #include <algorithm>
+#include <cerrno>
 
 #ifdef _WIN32
     #ifndef WIN32_LEAN_AND_MEAN
@@ -84,6 +85,8 @@
     #include <arpa/inet.h>
     #include <unistd.h>
     #include <netdb.h>
+    #include <poll.h>
+    #include <fcntl.h>
 
     using SocketHandle = int;
     constexpr SocketHandle kInvalidSocket = -1;
@@ -122,6 +125,10 @@ inline std::string last_socket_error() {
 inline bool last_error_was_timeout() {
     return WSAGetLastError() == WSAETIMEDOUT;
 }
+
+inline bool last_error_was_interrupt() {
+    return WSAGetLastError() == WSAEINTR;
+}
 #else
 inline void ensure_winsock_initialized() {}  // no-op on POSIX
 
@@ -132,6 +139,21 @@ inline std::string last_socket_error() {
 inline bool last_error_was_timeout() {
     return errno == EAGAIN || errno == EWOULDBLOCK;
 }
+
+inline bool last_error_was_interrupt() {
+    return errno == EINTR;
+}
+#endif
+
+// send() flags. On Linux, writing to a socket whose peer already closed
+// raises SIGPIPE by default, which silently KILLS the process (exit 141, no
+// message) instead of surfacing as an error we can report. MSG_NOSIGNAL turns
+// that into a normal EPIPE failure -> SocketError. (Windows has no SIGPIPE;
+// macOS lacks MSG_NOSIGNAL and uses SO_NOSIGPIPE, set per-socket below.)
+#if defined(MSG_NOSIGNAL) && !defined(_WIN32)
+constexpr int kSendFlags = MSG_NOSIGNAL;
+#else
+constexpr int kSendFlags = 0;
 #endif
 
 // ── TcpSocket ────────────────────────────────────────────────────────────────
@@ -195,15 +217,12 @@ public:
                     freeaddrinfo(res);
                     TcpSocket sock(h);
                     sock.set_nodelay();
+                    sock.set_no_sigpipe();
                     sock.set_io_timeout(io_timeout_ms);
                     return sock;
                 }
                 last_error = last_socket_error();
-#ifdef _WIN32
-                ::closesocket(h);
-#else
-                ::close(h);
-#endif
+                close_handle(h);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(retry_delay_ms));
         }
@@ -256,6 +275,7 @@ public:
 
         TcpSocket sock(conn_h);
         sock.set_nodelay();
+        sock.set_no_sigpipe();
         sock.set_io_timeout(io_timeout_ms);
         return sock;
     }
@@ -267,7 +287,8 @@ public:
         size_t sent = 0;
         while (sent < len) {
             SendRecvLen chunk = clamp_chunk(len - sent);
-            auto n = ::send(handle_, p + sent, chunk, 0);
+            auto n = ::send(handle_, p + sent, chunk, kSendFlags);
+            if (n < 0 && last_error_was_interrupt()) continue;   // signal landed mid-call: retry
             if (n < 0 && last_error_was_timeout()) {
                 throw SocketError("send_all: timed out after " + std::to_string(sent) + "/" +
                                    std::to_string(len) + " bytes - peer may be dead, or the "
@@ -288,6 +309,7 @@ public:
         while (received < len) {
             SendRecvLen chunk = clamp_chunk(len - received);
             auto n = ::recv(handle_, p + received, chunk, 0);
+            if (n < 0 && last_error_was_interrupt()) continue;   // signal landed mid-call: retry
             if (n == 0) {
                 throw SocketError("recv_all: peer closed the connection cleanly after " +
                                    std::to_string(received) + "/" + std::to_string(len) +
@@ -332,6 +354,13 @@ private:
 #else
         int yes = 1;
         ::setsockopt(handle_, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+#endif
+    }
+
+    void set_no_sigpipe() {
+#ifdef SO_NOSIGPIPE   // macOS/BSD: per-socket equivalent of MSG_NOSIGNAL
+        int yes = 1;
+        ::setsockopt(handle_, SOL_SOCKET, SO_NOSIGPIPE, &yes, sizeof(yes));
 #endif
     }
 
