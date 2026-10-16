@@ -270,7 +270,14 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    const size_t train_batches = local_samples / args.batch_size;
+    // EVERY rank must run the SAME number of batches: each batch ends in a
+    // collective (sync_gradients), and a rank that runs one extra batch would
+    // wait forever for peers that already left the loop. The last rank's
+    // shard can be a few samples bigger than the others (it absorbs the
+    // remainder), so derive the count from the common shard_size, not from
+    // this rank's local_samples. (Leftover samples < one batch are dropped.)
+    (void)local_samples;
+    const size_t train_batches = shard_size / args.batch_size;
     const size_t test_batches = test_data.num_samples / args.batch_size;
 
     // Unconditional (every rank, not just root) - the first epoch's own
@@ -283,6 +290,10 @@ int main(int argc, char** argv) {
                << train_batches << " train batches/epoch, " << test_batches
                << " test batches, batch_size=" << args.batch_size << "\n";
 
+    // A dead/unreachable peer surfaces as a SocketError out of sync_gradients().
+    // Left uncaught that becomes std::terminate -> an abort and a core dump with
+    // no explanation; catch it so the operator gets one clear line and exit code 3.
+    try {
     for (size_t epoch = start_epoch; epoch < args.epochs; ++epoch) {
         auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -361,6 +372,14 @@ int main(int argc, char** argv) {
                           << e.what() << "\n";
             }
         }
+    }
+
+    } catch (const stakmesh::comm::SocketError& e) {
+        std::cerr << "[rank " << args.rank << "] Lost contact with a peer during training: "
+                  << e.what() << "\n"
+                  << "[rank " << args.rank << "] Last checkpoint (if enabled) is in "
+                  << args.checkpoint_dir << "; re-run with --resume on every rank to continue.\n";
+        return 3;
     }
 
     if (is_root) std::cout << "\nRun complete!\n";
