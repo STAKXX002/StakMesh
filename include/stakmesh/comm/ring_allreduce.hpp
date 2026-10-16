@@ -40,6 +40,8 @@
 #include <vector>
 #include <cstddef>
 #include <algorithm>
+#include <exception>
+#include <thread>
 
 #include "socket.hpp"
 
@@ -47,6 +49,47 @@ namespace stakmesh {
 namespace comm {
 
 enum class ReduceOp { Sum, Average };
+
+// Sends `sbytes` to the next rank WHILE receiving `rbytes` from the previous
+// one.
+//
+// CONCEPT: why not just send_all() then recv_all()?
+//
+//   In a ring every rank sends at the same moment. send() only returns once
+//   the kernel has buffered the bytes (or the peer has drained them). With a
+//   small message that is instant, but once a chunk outgrows the socket
+//   send+receive buffers (a few MB on Linux loopback, ~64 KB-ish defaults
+//   elsewhere), EVERY rank blocks in send() waiting for a receiver that is
+//   itself blocked in send(): a circular wait, i.e. deadlock. It only shows
+//   up with big models/chunks - small test buffers never trigger it - and it
+//   surfaces as a misleading "peer may be dead" timeout.
+//
+//   Fix: for anything above a small inline threshold, do the send on a helper
+//   thread while this thread receives, exactly like a full-duplex MPI
+//   Sendrecv. Small messages keep the cheap sequential path (no thread spawn).
+inline void send_recv(const TcpSocket& send_sock, const void* send_buf, size_t sbytes,
+                      const TcpSocket& recv_sock, void* recv_buf, size_t rbytes) {
+    constexpr size_t kInlineLimit = 8 * 1024;   // safely below any default socket buffer
+    if (sbytes <= kInlineLimit) {
+        send_sock.send_all(send_buf, sbytes);
+        recv_sock.recv_all(recv_buf, rbytes);
+        return;
+    }
+
+    std::exception_ptr send_error;
+    std::thread sender([&]() {
+        try { send_sock.send_all(send_buf, sbytes); }
+        catch (...) { send_error = std::current_exception(); }
+    });
+
+    std::exception_ptr recv_error;
+    try { recv_sock.recv_all(recv_buf, rbytes); }
+    catch (...) { recv_error = std::current_exception(); }
+
+    sender.join();   // bounded: send_all has the socket's io timeout
+    if (recv_error) std::rethrow_exception(recv_error);
+    if (send_error) std::rethrow_exception(send_error);
+}
 
 // Splits `n` elements into `world_size` contiguous chunks as evenly as
 // possible. Remainder elements are distributed one-per-chunk starting from
@@ -102,8 +145,8 @@ inline void ring_all_reduce(float* data, size_t n, int rank, int world_size,
         int send_chunk = ((rank - step) % world_size + world_size) % world_size;
         int recv_chunk = ((rank - step - 1) % world_size + world_size) % world_size;
 
-        send_sock.send_all(data + starts[send_chunk], sizes[send_chunk] * sizeof(float));
-        recv_sock.recv_all(recv_buf.data(), sizes[recv_chunk] * sizeof(float));
+        send_recv(send_sock, data + starts[send_chunk], sizes[send_chunk] * sizeof(float),
+                  recv_sock, recv_buf.data(), sizes[recv_chunk] * sizeof(float));
 
         float* dst = data + starts[recv_chunk];
         for (size_t i = 0; i < sizes[recv_chunk]; ++i) {
@@ -118,8 +161,10 @@ inline void ring_all_reduce(float* data, size_t n, int rank, int world_size,
         int send_chunk = ((rank - step + 1) % world_size + world_size) % world_size;
         int recv_chunk = ((rank - step) % world_size + world_size) % world_size;
 
-        send_sock.send_all(data + starts[send_chunk], sizes[send_chunk] * sizeof(float));
-        recv_sock.recv_all(data + starts[recv_chunk], sizes[recv_chunk] * sizeof(float));
+        // send_chunk != recv_chunk (they differ by one mod W), so the helper
+        // thread reading one chunk never overlaps the main thread writing the other.
+        send_recv(send_sock, data + starts[send_chunk], sizes[send_chunk] * sizeof(float),
+                  recv_sock, data + starts[recv_chunk], sizes[recv_chunk] * sizeof(float));
     }
 
     // ── Optional averaging ───────────────────────────────────────────────
