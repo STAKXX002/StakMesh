@@ -20,7 +20,14 @@
 #                   not hang and not get killed by a signal (SIGPIPE).
 #
 # Env: STAKMESH_TEST_BASE_PORT pins the first port (default: random free range).
+#      OMP_NUM_THREADS defaults to 1 here (override by exporting it). All ranks
+#      share this machine's cores, and StakML's OpenMP matmul would otherwise
+#      start one spinning thread per core in EVERY rank; on a laptop that made
+#      the 2-rank run take ~11 s instead of ~0.3 s. A real multi-machine run
+#      has its own cores per rank, so this only applies to loopback.
 set -uo pipefail
+
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -38,7 +45,7 @@ while [[ $# -gt 0 ]]; do
         -t) TIMEOUT="$2"; shift 2 ;;
         --peer-death) PEER_DEATH=1; shift ;;
         --) shift; EXTRA=("$@"); break ;;
-        -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+        -h|--help) sed -n "2,30p" "$0"; exit 0 ;;
         *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
     esac
 done
