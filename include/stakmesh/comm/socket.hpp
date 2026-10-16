@@ -156,6 +156,58 @@ constexpr int kSendFlags = MSG_NOSIGNAL;
 constexpr int kSendFlags = 0;
 #endif
 
+// One connect() attempt bounded by `timeout_ms`. A plain blocking connect()
+// to a host that silently DROPS packets (a firewall rule - e.g. Windows
+// treating a network as "Public" - or a peer that is simply off) ignores our
+// retry deadline and blocks for the OS default (~2 minutes on Linux, ~20 s on
+// Windows). Non-blocking connect + a bounded wait keeps the deadline honest.
+// On failure returns false and fills `err`.
+inline bool connect_bounded(SocketHandle h, const sockaddr* addr, int addrlen,
+                             int timeout_ms, std::string& err) {
+#ifdef _WIN32
+    u_long nonblocking = 1;
+    ::ioctlsocket(h, FIONBIO, &nonblocking);
+    if (::connect(h, addr, addrlen) != 0) {
+        if (WSAGetLastError() != WSAEWOULDBLOCK) { err = last_socket_error(); return false; }
+        fd_set wfds, efds;
+        FD_ZERO(&wfds); FD_ZERO(&efds);
+        FD_SET(h, &wfds); FD_SET(h, &efds);   // Windows reports a failed connect via exceptfds
+        timeval tv{};
+        tv.tv_sec = timeout_ms / 1000;
+        tv.tv_usec = (timeout_ms % 1000) * 1000;
+        int rc = ::select(0, nullptr, &wfds, &efds, &tv);
+        if (rc == 0) { err = "connect attempt timed out (no response - firewall drop or host down?)"; return false; }
+        int so_err = 0, len = sizeof(so_err);
+        ::getsockopt(h, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&so_err), &len);
+        if (rc < 0 || so_err != 0 || FD_ISSET(h, &efds)) {
+            err = "WSA error " + std::to_string(so_err != 0 ? so_err : WSAGetLastError());
+            return false;
+        }
+    }
+    nonblocking = 0;
+    ::ioctlsocket(h, FIONBIO, &nonblocking);
+    return true;
+#else
+    int flags = ::fcntl(h, F_GETFL, 0);
+    ::fcntl(h, F_SETFL, flags | O_NONBLOCK);
+    if (::connect(h, addr, static_cast<socklen_t>(addrlen)) != 0) {
+        if (errno != EINPROGRESS && errno != EINTR) { err = last_socket_error(); return false; }
+        pollfd pfd{};
+        pfd.fd = h;
+        pfd.events = POLLOUT;
+        int rc;
+        do { rc = ::poll(&pfd, 1, timeout_ms); } while (rc < 0 && errno == EINTR);
+        if (rc == 0) { err = "connect attempt timed out (no response - firewall drop or host down?)"; return false; }
+        int so_err = 0;
+        socklen_t len = sizeof(so_err);
+        ::getsockopt(h, SOL_SOCKET, SO_ERROR, &so_err, &len);
+        if (rc < 0 || so_err != 0) { err = std::strerror(so_err != 0 ? so_err : errno); return false; }
+    }
+    ::fcntl(h, F_SETFL, flags);   // back to blocking for send_all/recv_all
+    return true;
+#endif
+}
+
 // ── TcpSocket ────────────────────────────────────────────────────────────────
 // Move-only. Owns exactly one socket handle. Closes it on destruction.
 class TcpSocket {
@@ -213,7 +265,15 @@ public:
                 SocketHandle h = ::socket(p->ai_family, p->ai_socktype, p->ai_protocol);
                 if (h == kInvalidSocket) continue;
 
-                if (::connect(h, p->ai_addr, static_cast<int>(p->ai_addrlen)) == 0) {
+                // Per-attempt cap: never wait past the overall deadline, and
+                // re-try a silent (dropped-SYN) target every few seconds
+                // rather than sitting on one attempt.
+                auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    deadline - std::chrono::steady_clock::now()).count();
+                int attempt_ms = static_cast<int>(std::max<long long>(1, std::min<long long>(remaining_ms, 3000)));
+                std::string attempt_err;
+                if (connect_bounded(h, p->ai_addr, static_cast<int>(p->ai_addrlen),
+                                     attempt_ms, attempt_err)) {
                     freeaddrinfo(res);
                     TcpSocket sock(h);
                     sock.set_nodelay();
@@ -221,7 +281,7 @@ public:
                     sock.set_io_timeout(io_timeout_ms);
                     return sock;
                 }
-                last_error = last_socket_error();
+                last_error = attempt_err;
                 close_handle(h);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(retry_delay_ms));
