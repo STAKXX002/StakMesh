@@ -65,13 +65,27 @@ jobs:
           install: >-
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-openmp
             mingw-w64-ucrt-x86_64-ninja
 
-      # Two passes on purpose. Pass 1 is the plain configure that is known to work
-      # (it runs FindOpenMP, whose results are cached). Pass 2 only adds -static,
-      # which pulls libstdc++/libgcc/winpthread into the exes. Putting -static in
-      # pass 1 broke OpenMP detection on newer MSYS2 toolchains. (An earlier commit
-      # claimed static linking but never actually passed any static flag.)
+      # StakML's CPU backend needs OpenMP (find_package(OpenMP REQUIRED)). The GCC
+      # package alone no longer guarantees libgomp is installed: with it missing,
+      # FindOpenMP fails with "missing: OpenMP_CXX_FLAGS OpenMP_CXX_LIB_NAMES"
+      # whatever flags are passed, hence the explicit mingw-w64-*-openmp above.
+      # This step just prints what the runner actually has, to make any future
+      # toolchain change obvious from the log.
+      - name: Show toolchain
+        run: |
+          gcc --version | head -1
+          echo "libgomp.a      -> $(gcc -print-file-name=libgomp.a)"
+          echo "libgomp.dll.a  -> $(gcc -print-file-name=libgomp.dll.a)"
+          ls -1 "$(dirname "$(command -v gcc)")"/libgomp* || echo "no libgomp DLL next to gcc"
+
+      # Two passes: pass 1 is a stock configure, so compiler/OpenMP feature checks
+      # run with default flags; pass 2 only adds -static, which affects the final
+      # link (pulls libstdc++/libgcc/winpthread into the exes). Pass 2 reuses the
+      # cached OpenMP result. (An earlier commit claimed static linking but never
+      # actually passed any static flag.)
       - name: Configure
         run: |
           cmake -S . -B build -G Ninja \
