@@ -1,4 +1,7 @@
-cmake_minimum_required(VERSION 3.18)
+# 3.28: FetchContent_Declare(... EXCLUDE_FROM_ALL) below is only honored from
+# 3.28 on; with an older CMake it is silently ignored and StakML's own
+# tests/examples get built too. Requiring it up front gives a clear error.
+cmake_minimum_required(VERSION 3.28)
 project(StakMesh VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -115,10 +118,25 @@ if(STAKMESH_BUILD_DIST)
     target_link_libraries(test_checkpoint PRIVATE stakmesh_dist)
     add_test(NAME checkpoint COMMAND test_checkpoint)
 
-    # End-to-end smoke test: one binary, usable on loopback (scripts/loopback_test.sh)
-    # or across real machines via --config.
+    # End-to-end smoke test: one binary, usable on loopback (scripts/loopback_test.sh,
+    # registered with ctest below) or across real machines via --config.
     add_executable(stakmesh_smoke tests/stakmesh_smoke.cpp)
     target_link_libraries(stakmesh_smoke PRIVATE stakmesh_dist)
+
+    # Single-machine loopback runs of stakmesh_smoke: real processes, real TCP
+    # on 127.0.0.1. POSIX only (bash + /dev/tcp); see scripts/loopback_test.sh.
+    if(NOT WIN32)
+        find_program(STAKMESH_BASH bash)
+        if(STAKMESH_BASH)
+            set(_lb ${STAKMESH_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/loopback_test.sh
+                    -b $<TARGET_FILE:stakmesh_smoke>)
+            add_test(NAME loopback_2ranks COMMAND ${_lb} -n 2)
+            add_test(NAME loopback_3ranks COMMAND ${_lb} -n 3)
+            add_test(NAME loopback_peer_death COMMAND ${_lb} -n 2 --peer-death)
+            set_tests_properties(loopback_2ranks loopback_3ranks loopback_peer_death
+                                 PROPERTIES TIMEOUT 150 LABELS loopback)
+        endif()
+    endif()
 
     # Real Phase 2 example. Not run by ctest (needs MNIST data files + a
     # second machine) -- built so it's caught by CI/compile checks, and

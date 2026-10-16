@@ -179,6 +179,43 @@ instead of fetching from GitHub each time:
 cmake .. -DSTAKMESH_STAKML_SOURCE_DIR=/path/to/your/StakML
 ```
 
+## Testing on one machine (loopback smoke test)
+
+No second laptop, no MNIST files needed. `stakmesh_smoke` runs the real code
+path (separate processes, real kernel TCP sockets, `establish_ring`, ring
+all-reduce, broadcast, `sync_gradients`) and checks:
+
+| Stage | What it verifies |
+|---|---|
+| `ring` | ring handshake completes |
+| `broadcast` | every rank can be root; buffers arrive intact |
+| `allreduce` | Sum and Average match closed-form values, including `n < world_size` and sizes that don't divide evenly |
+| `large` | a 16 MB all-reduce completes (catches send/send deadlock) and reports MB/s |
+| `weights` | after training on *different* data per rank, weights are **bit-identical** on every rank |
+| `training` | a tiny synthetic MLP actually learns (loss falls, held-out accuracy well above chance) |
+
+```bash
+cmake --build build -j
+scripts/loopback_test.sh              # 2 ranks on 127.0.0.1
+scripts/loopback_test.sh -n 4         # 4 ranks
+scripts/loopback_test.sh --peer-death # rank dies mid-training; survivors must fail cleanly
+ctest --test-dir build -L loopback    # the same three, via ctest
+```
+
+Loopback uses the same sockets and framing as a Tailscale/LAN run, so passing
+here means the logic (ring order, chunking, gradient averaging, weight sync) is
+sound. It does **not** exercise the network itself - firewall rules, routing,
+MTU, latency, or the Windows Winsock path - so after it passes, run the *same
+binary* across the real machines to cover those:
+
+```bash
+./stakmesh_smoke --config configs/two_laptop_cluster.txt   # same command on each machine
+```
+
+Every stage except `large`'s MB/s figure is deterministic, so loopback and
+Tailscale runs should print the same PASS lines; only the throughput differs,
+which makes that number a quick read on how much the network costs you.
+
 ## Running the distributed training example
 
 The standard MNIST IDX files are required (`train-images-idx3-ubyte`,
@@ -373,7 +410,9 @@ checking before Phase 5.
 include/stakmesh/comm/   socket.hpp, topology.hpp, ring_allreduce.hpp, broadcast.hpp,
                          local_addresses.hpp, cluster_config.hpp
 include/stakmesh/dist/   distributed_context.hpp
-tests/                   correctness tests, comm only and full StakML integration
+tests/                   correctness tests, comm only and full StakML integration,
+                         plus stakmesh_smoke.cpp (the loopback / cross-machine smoke test)
+scripts/                 launch_cluster.sh, discover_nodes.sh, loopback_test.sh
 examples/                mnist_distributed.cpp, the real Phase 2 and Phase 3 training script
 configs/                 cluster configuration for the two laptop setup, see Phase 3
 CMakeLists.txt
