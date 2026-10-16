@@ -80,6 +80,19 @@ public:
     int rank() const { return links_.rank; }
     int world_size() const { return links_.world_size; }
 
+    // Raw collectives on a plain float buffer (no StakML tensors involved).
+    // Useful for metrics, smoke tests, and anything else that isn't a
+    // parameter list. Same contract as the comm:: functions: every rank must
+    // call with the same `n` (and `root`/`op`) at the same point.
+    void all_reduce(float* data, size_t n, comm::ReduceOp op = comm::ReduceOp::Average) {
+        comm::ring_all_reduce(data, n, links_.rank, links_.world_size,
+                               links_.send_sock, links_.recv_sock, op);
+    }
+    void broadcast(float* data, size_t n, int root = 0) {
+        comm::ring_broadcast(data, n, links_.rank, links_.world_size, root,
+                              links_.send_sock, links_.recv_sock);
+    }
+
     // Broadcasts every parameter's VALUE (not gradient) from `root` to all
     // other ranks. Call this ONCE, right after constructing the model and
     // BEFORE the training loop starts - it's what makes every rank's

@@ -115,6 +115,11 @@ if(STAKMESH_BUILD_DIST)
     target_link_libraries(test_checkpoint PRIVATE stakmesh_dist)
     add_test(NAME checkpoint COMMAND test_checkpoint)
 
+    # End-to-end smoke test: one binary, usable on loopback (scripts/loopback_test.sh)
+    # or across real machines via --config.
+    add_executable(stakmesh_smoke tests/stakmesh_smoke.cpp)
+    target_link_libraries(stakmesh_smoke PRIVATE stakmesh_dist)
+
     # Real Phase 2 example. Not run by ctest (needs MNIST data files + a
     # second machine) -- built so it's caught by CI/compile checks, and
     # ready to run directly: see examples/mnist_distributed.cpp for usage.
