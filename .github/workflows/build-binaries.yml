@@ -7,6 +7,10 @@ name: Build cluster binaries
 #
 # Goal: adding/refreshing a node should be "download the right binary from
 # the latest run" instead of "clone the repo and build it there".
+#
+# Each artifact holds TWO binaries: mnist_distributed (the real training job)
+# and stakmesh_smoke (no-dataset check that a cluster is wired up correctly;
+# run it first on a new node/network: see README "Testing on one machine").
 
 on:
   push:
@@ -38,7 +42,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mnist_distributed-linux-x86_64
-          path: build/mnist_distributed
+          path: |
+            build/mnist_distributed
+            build/stakmesh_smoke
           if-no-files-found: error
 
   build-windows:
@@ -61,11 +67,17 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-ninja
 
+      # -static pulls libstdc++/libgcc/winpthread into the exe. OpenMP needs a
+      # second nudge: CMake's FindOpenMP passes libgomp's *import* library by full
+      # path, which beats -static, so point it at the static archive explicitly.
+      # (An earlier commit claimed static linking but never passed these flags.)
       - name: Configure
-        run: >
-          cmake -S . -B build -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DSTAKMESH_NATIVE_ARCH=OFF
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSTAKMESH_NATIVE_ARCH=OFF \
+            -DCMAKE_EXE_LINKER_FLAGS="-static" \
+            -DOpenMP_gomp_LIBRARY="$(gcc -print-file-name=libgomp.a)"
 
       - name: Build
         run: cmake --build build -j
@@ -73,11 +85,26 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
-      - name: Upload binary
+      # The binaries get copied to machines WITHOUT MSYS2, so a missing-DLL
+      # dependency would only show up later as a silent "won't start". Fail here.
+      - name: Check binaries have no MSYS2 runtime DLL dependency
+        run: |
+          for exe in build/mnist_distributed.exe build/stakmesh_smoke.exe; do
+            echo "== $exe imports:"
+            objdump -p "$exe" | grep "DLL Name" | sort -u
+            if objdump -p "$exe" | grep -Ei "libstdc|libgcc|winpthread|libgomp"; then
+              echo "::error::$exe still depends on an MSYS2 runtime DLL"
+              exit 1
+            fi
+          done
+
+      - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
           name: mnist_distributed-windows-x86_64
-          path: build/mnist_distributed.exe
+          path: |
+            build/mnist_distributed.exe
+            build/stakmesh_smoke.exe
           if-no-files-found: error
 
   # Only runs when a GitHub Release is created (e.g. `git tag vX && git push
@@ -100,4 +127,6 @@ jobs:
         with:
           files: |
             artifacts/mnist_distributed-linux-x86_64/mnist_distributed
+            artifacts/mnist_distributed-linux-x86_64/stakmesh_smoke
             artifacts/mnist_distributed-windows-x86_64/mnist_distributed.exe
+            artifacts/mnist_distributed-windows-x86_64/stakmesh_smoke.exe
