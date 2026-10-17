@@ -65,21 +65,27 @@ jobs:
           install: >-
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-openmp
             mingw-w64-ucrt-x86_64-ninja
 
-      # StakML's CPU backend needs OpenMP (find_package(OpenMP REQUIRED)). The GCC
-      # package alone no longer guarantees libgomp is installed: with it missing,
-      # FindOpenMP fails with "missing: OpenMP_CXX_FLAGS OpenMP_CXX_LIB_NAMES"
-      # whatever flags are passed, hence the explicit mingw-w64-*-openmp above.
-      # This step just prints what the runner actually has, to make any future
-      # toolchain change obvious from the log.
+      # DIAGNOSTIC. On the GCC 16.2 runner, StakML's find_package(OpenMP REQUIRED)
+      # failed ("missing: OpenMP_CXX_FLAGS OpenMP_CXX_LIB_NAMES"), i.e. CMake's
+      # own `-fopenmp` test program did not compile/link. The cause is not yet
+      # known, so show the toolchain and compile that kind of program directly
+      # to get the real compiler error in the log.
       - name: Show toolchain
         run: |
           gcc --version | head -1
           echo "libgomp.a      -> $(gcc -print-file-name=libgomp.a)"
           echo "libgomp.dll.a  -> $(gcc -print-file-name=libgomp.dll.a)"
+          echo "omp.h          -> $(gcc -print-file-name=include/omp.h)"
           ls -1 "$(dirname "$(command -v gcc)")"/libgomp* || echo "no libgomp DLL next to gcc"
+          printf '#include <omp.h>\nint main(){return omp_get_max_threads()>0?0:1;}\n' > /tmp/omp_test.cpp
+          if g++ -fopenmp /tmp/omp_test.cpp -o /tmp/omp_test.exe; then
+            echo "direct -fopenmp test: OK"
+          else
+            echo "direct -fopenmp test: FAILED (compiler output above)"
+          fi
+          pacman -Qs 'ucrt-x86_64-(gcc|openmp|llvm-openmp)' || true
 
       # Two passes: pass 1 is a stock configure, so compiler/OpenMP feature checks
       # run with default flags; pass 2 only adds -static, which affects the final
@@ -88,9 +94,15 @@ jobs:
       # actually passed any static flag.)
       - name: Configure
         run: |
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DSTAKMESH_NATIVE_ARCH=OFF
+          if ! cmake -S . -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DSTAKMESH_NATIVE_ARCH=OFF; then
+            echo "::group::CMake configure log (last 150 lines)"
+            tail -n 150 build/CMakeFiles/CMakeConfigureLog.yaml 2>/dev/null || true
+            tail -n 60 build/CMakeFiles/CMakeError.log 2>/dev/null || true
+            echo "::endgroup::"
+            exit 1
+          fi
           cmake -S . -B build -DCMAKE_EXE_LINKER_FLAGS="-static"
 
       - name: Build
