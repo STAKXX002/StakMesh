@@ -65,13 +65,15 @@ jobs:
           install: >-
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-libgomp
             mingw-w64-ucrt-x86_64-ninja
 
-      # DIAGNOSTIC. On the GCC 16.2 runner, StakML's find_package(OpenMP REQUIRED)
-      # failed ("missing: OpenMP_CXX_FLAGS OpenMP_CXX_LIB_NAMES"), i.e. CMake's
-      # own `-fopenmp` test program did not compile/link. The cause is not yet
-      # known, so show the toolchain and compile that kind of program directly
-      # to get the real compiler error in the log.
+      # With GCC 16, MSYS2 split the OpenMP runtime out of the compiler package:
+      # `gcc` only lists mingw-w64-ucrt-x86_64-libgomp as an OPTIONAL dependency.
+      # Without it omp.h exists but there is no libgomp to link, so StakML's
+      # find_package(OpenMP REQUIRED) fails ("missing: OpenMP_CXX_FLAGS
+      # OpenMP_CXX_LIB_NAMES") - hence libgomp in the install list above.
+      # The step below stays as a cheap record of what the runner provides.
       - name: Show toolchain
         run: |
           gcc --version | head -1

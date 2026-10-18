@@ -159,7 +159,19 @@ ctest --output-on-failure
 
 Build from an MSYS2 shell matching whichever environment you installed
 (UCRT64 or MINGW64, both work, just be consistent about which one you use
-each time):
+each time).
+
+Packages needed (UCRT64 names; for MINGW64 replace `ucrt` with nothing, i.e.
+`mingw-w64-x86_64-...`):
+
+```bash
+pacman -S mingw-w64-ucrt-x86_64-{gcc,libgomp,cmake,ninja}
+```
+
+`libgomp` (the OpenMP runtime StakML links against) must be listed
+explicitly: since GCC 16 the MSYS2 `gcc` package no longer pulls it in, and
+without it configure fails with `Could NOT find OpenMP_CXX`. Installing the
+whole `mingw-w64-ucrt-x86_64-toolchain` group also covers it.
 
 ```bash
 mkdir build && cd build
@@ -334,15 +346,12 @@ Every push to `main` builds portable Release binaries, with
 `.github/workflows/build-binaries.yml`:
 
 - `mnist_distributed-linux-x86_64`
-- `mnist_distributed-windows-x86_64`, built with MSYS2 (MINGW64 environment)
+- `mnist_distributed-windows-x86_64`, built with MSYS2 (UCRT64 environment)
 
-The Windows cluster machine currently builds locally in UCRT64, not
-MINGW64. Both are valid MSYS2 environments and the resulting binaries
-should behave the same, but this means the CI binary is not literally the
-same toolchain output as the local build yet. Worth reconciling one way or
-the other (switch the CI workflow to UCRT64, or switch local dev to
-MINGW64) before relying on `--deploy`'d CI binaries as a drop-in
-replacement for a local rebuild.
+CI and the Windows cluster machine both use UCRT64, so the CI binary is the
+same toolchain output as a local build. The Windows artifact is statically
+linked against the C++ runtime but ships `libgomp-1.dll` (and the DLLs it
+needs) next to the `.exe`: keep those files together when copying it to a node.
 
 Download the artifacts from a workflow run, or from a tagged release once
 one exists, then either copy the binary manually, or add a `deploy` line to
